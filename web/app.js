@@ -2728,7 +2728,7 @@ async function renderMap() {
    Bundled months work offline; iNaturalist records refine them online.
    ============================================================ */
 let edView = { month: new Date().getMonth() + 1, kind: lsGet("edKind", "all"), q: "", place: lsGet("edPlace", null), radius: lsGet("edRadius", 50), useArea: lsGet("edUseArea", true) };
-const ED_RADII = [10, 25, 50, 100, 150];
+const ED_RADII = [5, 10, 25, 50, 100, 150];
 // A searched place uses its own boundary unless a radius is picked; "Near you" always uses a radius.
 function edUsesBoundary(place) { return !!(place && place.placeId && edView.useArea); }   // place: {name, lat, lng, placeId?}
 const MONTHS3 = MONTHS.map(m => m.slice(0, 3));
