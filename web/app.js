@@ -160,6 +160,7 @@ const SCALE_REFS = [
   ["cad5", "Canadian nickel", 21.2], ["cad10", "Canadian dime", 18.03], ["cad1", "Canadian penny", 19.05],
   ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05],
   ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
+  ["bic", "Standard lighter (BIC Classic), height", 81], ["bicW", "Standard lighter (BIC Classic), width", 25], ["bicMini", "Mini lighter (BIC Mini), height", 63],
   ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10]
 ];
 function suggestLookalikes(text) {
