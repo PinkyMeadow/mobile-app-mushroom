@@ -296,20 +296,66 @@ function wmoToChips(code, wind) {
   if (wind >= 30) out.push("Windy");
   return out;
 }
-async function fetchWeather(lat, lng) {
-  const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&current=temperature_2m,weather_code,wind_speed_10m&daily=precipitation_sum,temperature_2m_min&past_days=3&forecast_days=1&timezone=auto`;
-  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 10000);
-  const r = await fetch(u, { signal: ctl.signal }); clearTimeout(t);
+/* Weather for the time and place of a find, from Open-Meteo (needs signal).
+   Recent finds use the forecast service; older ones use the historical archive. */
+const SOIL = ["Dry", "Moist", "Wet", "Saturated", "Not sure"];
+function soilLabel(v) { return v == null ? "" : v < 0.12 ? "Dry" : v < 0.22 ? "Moist" : v < 0.32 ? "Wet" : "Saturated"; }
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+async function fetchWeather(lat, lng, whenISO) {
+  const when = new Date(whenISO || Date.now());
+  const ageDays = (Date.now() - when) / DAY;
+  if (ageDays < -1) throw new Error("future");
+  const from = new Date(when - 3 * DAY);
+  const old = ageDays > 85;
+  const soilVar = old ? "soil_moisture_0_to_7cm" : "soil_moisture_3_to_9cm";
+  const host = old ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast";
+  const u = `${host}?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&hourly=temperature_2m,weather_code,wind_speed_10m,precipitation,${soilVar}&start_date=${ymd(from)}&end_date=${ymd(when)}&timezone=auto`;
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+  let r;
+  try { r = await fetch(u, { signal: ctl.signal }); } finally { clearTimeout(t); }
   if (!r.ok) throw new Error("weather " + r.status);
   const j = await r.json();
-  const rain = (j.daily.precipitation_sum || []).slice(0, 3).reduce((a, b) => a + (b || 0), 0);
-  const minT = Math.min(...(j.daily.temperature_2m_min || []).slice(0, 3).filter(x => x != null));
+  const h = j.hourly || {};
+  const times = h.time || [];
+  if (!times.length) throw new Error("no data");
+  // The hour of the find, in the spot's local time (close enough to the phone's).
+  const key = `${ymd(when)}T${String(when.getHours()).padStart(2, "0")}:00`;
+  let i = times.indexOf(key);
+  if (i < 0) i = times.length - 1;
+  // Archive data lags a few days; step back to the latest hour that has values.
+  while (i > 0 && h.temperature_2m[i] == null) i--;
+  const rain = (h.precipitation || []).slice(Math.max(0, i - 72), i + 1).reduce((s, x) => s + (x || 0), 0);
+  const temps = (h.temperature_2m || []).slice(Math.max(0, i - 72), i + 1).filter(x => x != null);
+  const soil = (h[soilVar] || [])[i];
   return {
-    chips: wmoToChips(j.current.weather_code, j.current.wind_speed_10m),
-    temp: Math.round(j.current.temperature_2m),
+    chips: wmoToChips(h.weather_code[i], h.wind_speed_10m[i]),
+    temp: h.temperature_2m[i] == null ? null : Math.round(h.temperature_2m[i]),
     rainRecent: rain < 1 ? "Dry for days" : rain < 10 ? "Light rain recently" : "Heavy rain recently",
-    note: `${rain.toFixed(1)} mm of rain over the last 3 days${isFinite(minT) ? `, lowest ${Math.round(minT)} °C` : ""}. From Open-Meteo.`
+    soil: soil == null ? "" : soilLabel(soil),
+    soilVwc: soil == null ? null : +soil.toFixed(3),
+    note: `${rain.toFixed(1)} mm of rain in the 3 days before${temps.length ? `, lowest ${Math.round(Math.min(...temps))} °C` : ""}. From Open-Meteo.`
   };
+}
+
+/* Moon phase, worked out on the phone. No signal needed. */
+function moonPhase(d) {
+  const syn = 29.530588853;
+  const ref = Date.UTC(2000, 0, 6, 18, 14);
+  const age = (((new Date(d) - ref) / DAY) % syn + syn) % syn;
+  const illum = Math.round((1 - Math.cos(2 * Math.PI * age / syn)) / 2 * 100);
+  const names = [[1.84, "New moon"], [5.53, "Waxing crescent"], [9.23, "First quarter"], [12.91, "Waxing gibbous"], [16.61, "Full moon"], [20.30, "Waning gibbous"], [23.99, "Last quarter"], [27.68, "Waning crescent"], [99, "New moon"]];
+  const name = names.find(n => age < n[0])[1];
+  return { name, illum, age: +age.toFixed(1) };
+}
+function moonIcon(age) {
+  // A small drawn moon: lit part grows from the right while waxing.
+  const syn = 29.53, k = Math.cos(2 * Math.PI * age / syn);   // 1 = new, -1 = full
+  const waxing = age < syn / 2;
+  const rx = Math.abs(k) * 9;
+  const lit = "#ede6d8", dark = "#2b3833";
+  const sweepOuter = waxing ? 1 : 0;
+  const sweepInner = (k > 0) === waxing ? 0 : 1;
+  return `<svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true" style="vertical-align:-4px"><circle r="9" fill="${dark}"/><path d="M0 -9 A9 9 0 0 ${sweepOuter} 0 9 A${rx.toFixed(2)} 9 0 0 ${sweepInner} 0 -9Z" fill="${lit}"/></svg>`;
 }
 
 /* ============================================================
@@ -495,7 +541,7 @@ async function quickLog(file) {
     const f = normalise({
       id: uid(), type: lsGet("lastType", "mushroom"), name: "", photos: [{ key, label: "Whole" }],
       lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, acc: loc ? loc.acc ?? null : null, locSource: src,
-      foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true,
+      foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, moon: moonPhase(nowISO),
       width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "",
       weather: [], rainRecent: "", temp: null, weatherNote: ""
     });
@@ -505,9 +551,9 @@ async function quickLog(file) {
     toast(loc ? "Saved with location. Add details later." : "Saved. No location yet, so pin it when you add details.");
     renderLog();
     // Fill weather quietly if there's signal.
-    if (loc && navigator.onLine) fetchWeather(loc.lat, loc.lng).then(async w => {
+    if (loc && navigator.onLine) fetchWeather(loc.lat, loc.lng, f.foundAt).then(async w => {
       const cur = finds.find(x => x.id === f.id); if (!cur || cur.weather.length) return;
-      Object.assign(cur, { weather: w.chips, temp: w.temp, rainRecent: w.rainRecent, weatherNote: w.note });
+      Object.assign(cur, { weather: w.chips, temp: w.temp, rainRecent: w.rainRecent, weatherNote: w.note, soil: w.soil, soilVwc: w.soilVwc, soilAuto: !!w.soil, wxAuto: true });
       await store.put("finds", cur);
     }).catch(() => {});
   } catch (e) { toast(e.message || "Couldn't save that photo"); }
@@ -521,7 +567,7 @@ function matches(f) {
   else if (view.filter !== "all" && f.type !== view.filter) return false;
   if (view.tag && !f.tags.includes(view.tag)) return false;
   if (view.q) {
-    const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
+    const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
     return view.q.toLowerCase().split(/\s+/).every(w => hay.includes(w.replace(/^#/, "")));
   }
   return true;
@@ -698,6 +744,8 @@ async function renderDetail(id) {
         <div class="fact"><span class="eyebrow">On the day</span><span class="v">${esc((f.weather || []).join(", ") || "—")}</span></div>
         <div class="fact"><span class="eyebrow">Recent rain</span><span class="v">${esc(f.rainRecent || "—")}</span></div>
         <div class="fact"><span class="eyebrow">Temperature</span><span class="v num">${f.temp != null ? esc(f.temp) + "<small> °C</small>" : "—"}</span></div>
+        <div class="fact"><span class="eyebrow">Soil moisture</span><span class="v">${esc(f.soil || "—")}${f.soil && f.soilAuto ? "<small> estimate</small>" : ""}</span></div>
+        <div class="fact"><span class="eyebrow">Moon</span><span class="v">${(() => { const m = f.moon || moonPhase(f.foundAt); return `${moonIcon(m.age)} ${esc(m.name)}<small> ${m.illum}% lit</small>`; })()}</span></div>
       </div>
       ${f.weatherNote ? `<p class="hint">${esc(f.weatherNote)}</p>` : ""}
     </div>
@@ -814,6 +862,7 @@ async function renderForm(id) {
       <div class="auto-time"><div><div class="eyebrow">Found</div><div class="big num" id="todLabel"></div></div>
         <button class="btn small ghost" type="button" id="editTime"><svg><use href="#i-edit"/></svg>Change</button></div>
       <div class="field" id="timeField" hidden><label for="foundAt">Date and time found</label><input type="datetime-local" id="foundAt" value="${toLocalInput(new Date(f.foundAt))}"></div>
+      <div class="hint" id="moonLine" style="color:var(--fg)"></div>
       <span class="hint">Filled in from your phone's clock. The entry's own date and time are saved when you tap Save.</span>
     </fieldset>
 
@@ -881,13 +930,16 @@ async function renderForm(id) {
     </fieldset>
 
     <fieldset><legend>Recent weather</legend>
-      <div class="btn-row" id="wxAutoRow"><button class="btn small" type="button" id="wxAuto"><svg><use href="#i-cloud"/></svg>Fill in from the forecast</button></div>
+      <div class="loc-box" id="wxStatusBox"><div class="loc-status none" id="wxStatus"><svg><use href="#i-cloud"/></svg><span></span></div>
+        <div class="btn-row" id="wxAutoRow"><button class="btn small" type="button" id="wxAuto"><svg><use href="#i-cloud"/></svg>Fill in from weather records</button></div></div>
       <div class="lbl">On the day</div>
       ${chipGroup("wxChips", WEATHER, f.weather, "w")}
       <div class="grid-2">
         <div class="field"><label for="rainRecent">Last few days</label><select id="rainRecent"><option value="">Choose</option>${RAIN_RECENT.map(r => `<option ${f.rainRecent === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
         <div class="field"><label for="temp">Temperature</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" id="temp" value="${f.temp ?? ""}"><span>°C</span></div></div>
       </div>
+      <div class="field"><label for="soil">Soil moisture <span style="font-weight:400">(rough estimate)</span></label><select id="soil"><option value="">Choose</option>${SOIL.map(s => `<option ${f.soil === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <span class="hint" id="soilHint">${f.soilAuto && f.soilVwc != null ? `Estimated from weather models: ${f.soilVwc} m³ of water per m³ of soil, near the surface. Change it if the ground felt different.` : "Filled in from weather models when you have signal. It's an estimate for the area, not a measurement of this spot."}</span></div>
       <div class="field"><label for="wxNote">Weather notes</label><input type="text" id="wxNote" placeholder="e.g. first frost two nights ago" value="${esc(f.weatherNote)}"></div>
     </fieldset>
 
@@ -972,7 +1024,10 @@ async function renderForm(id) {
   // Time
   const todLabel = () => { const d = new Date($("#foundAt").value || f.foundAt); $("#todLabel").textContent = `${timeOfDay(d)} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} · ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`; };
   todLabel();
+  const moonLine = () => { const m = moonPhase($("#foundAt").value ? new Date($("#foundAt").value) : f.foundAt); $("#moonLine").innerHTML = `${moonIcon(m.age)} ${esc(m.name)}, ${m.illum}% lit`; };
+  moonLine();
   $("#foundAt").addEventListener("input", todLabel);
+  $("#foundAt").addEventListener("input", moonLine);
   $("#editTime").addEventListener("click", () => { $("#timeField").hidden = false; $("#editTime").hidden = true; $("#foundAt").focus(); });
 
   // Photos
@@ -1042,23 +1097,54 @@ async function renderForm(id) {
   $("#exifBtn").addEventListener("click", () => photoExif && setLoc({ ...photoExif, acc: null }, "photo"));
   $("#clearLoc").addEventListener("click", () => { f.lat = f.lng = f.acc = null; f.locSource = null; showLoc(); });
 
-  // Auto weather: only when online, the spot is known and the find is recent.
-  function wxRow() {
-    const recent = Math.abs(Date.now() - new Date($("#foundAt").value || f.foundAt)) < 6 * 3600000;
-    $("#wxAutoRow").hidden = !(navigator.onLine && f.lat != null && recent);
+  // Weather fills in by itself once the spot is known and there's signal.
+  let wxDoneFor = null, wxBusy = false, soilAuto = !!f.soilAuto, soilVwc = f.soilVwc ?? null;
+  const wxEmpty = () => !picked(form, "wxChips", "w").length && $("#temp").value === "" && !$("#rainRecent").value;
+  function wxStatus(msg, ok) {
+    $("#wxStatus").className = "loc-status " + (ok ? "ok" : "none");
+    $("#wxStatus span").textContent = msg;
   }
-  $("#foundAt").addEventListener("input", wxRow);
-  $("#wxAuto").addEventListener("click", async () => {
-    const b = $("#wxAuto"); b.disabled = true;
+  function wxRow() {
+    const can = navigator.onLine && f.lat != null;
+    $("#wxAutoRow").hidden = !can;
+    if (wxBusy) return;
+    if (!navigator.onLine) wxStatus("No signal. Fill in the weather by hand, or edit this find later to fill it in.", false);
+    else if (f.lat == null) wxStatus("Weather fills in by itself once the location is set.", false);
+    else if (wxDoneFor) wxStatus("Weather filled in from Open-Meteo. You can change anything below.", true);
+    else wxStatus("Ready to fill in the weather.", false);
+    // Fill automatically the first time a spot is known, if nothing's been entered yet.
+    const sig = f.lat != null ? `${f.lat.toFixed(3)},${f.lng.toFixed(3)},${$("#foundAt").value}` : null;
+    if (can && sig && sig !== wxDoneFor && wxEmpty()) fillWeather(true);
+  }
+  async function fillWeather(auto) {
+    if (wxBusy || f.lat == null) return;
+    wxBusy = true; $("#wxAuto").disabled = true;
+    wxStatus("Getting the weather for this time and place…", false);
+    const sig = `${f.lat.toFixed(3)},${f.lng.toFixed(3)},${$("#foundAt").value}`;
     try {
-      const w = await fetchWeather(f.lat, f.lng);
+      const w = await fetchWeather(f.lat, f.lng, new Date($("#foundAt").value || f.foundAt).toISOString());
       $$("#wxChips .chip", form).forEach(c => c.setAttribute("aria-pressed", w.chips.includes(c.dataset.w)));
-      $("#temp").value = w.temp; $("#rainRecent").value = w.rainRecent;
-      if (!$("#wxNote").value) $("#wxNote").value = w.note;
-      toast("Weather filled in");
-    } catch (e) { toast("Couldn't reach the weather service. Fill it in by hand."); }
-    b.disabled = false;
-  });
+      if (w.temp != null) $("#temp").value = w.temp;
+      $("#rainRecent").value = w.rainRecent;
+      if (!$("#wxNote").value || /From Open-Meteo\.$/.test($("#wxNote").value)) $("#wxNote").value = w.note;
+      if (w.soil) {
+        $("#soil").value = w.soil; soilAuto = true; soilVwc = w.soilVwc;
+        $("#soilHint").textContent = `Estimated from weather models: ${w.soilVwc} m³ of water per m³ of soil, near the surface. Change it if the ground felt different.`;
+      }
+      wxDoneFor = sig; wxBusy = false;
+      wxStatus("Weather filled in from Open-Meteo. You can change anything below.", true);
+      if (!auto) toast("Weather filled in");
+    } catch (e) {
+      wxDoneFor = sig; wxBusy = false;
+      wxStatus(e.message === "future" ? "That time is in the future, so there's no weather to fill in." : "Couldn't reach the weather service. Fill it in by hand.", false);
+    }
+    $("#wxAuto").disabled = false;
+  }
+  $("#soil").addEventListener("change", () => { soilAuto = false; });
+  let wxTimer = null;
+  $("#foundAt").addEventListener("change", () => { clearTimeout(wxTimer); wxTimer = setTimeout(wxRow, 400); });
+  $("#wxAuto").addEventListener("click", () => fillWeather(false));
+  window.addEventListener("online", wxRow, { once: true });
   showLoc();
   if (!existing && geoAvailable()) tryGPS(true);
   else if (!geoAvailable()) $("#gpsBtn").hidden = true;
@@ -1078,6 +1164,10 @@ async function renderForm(id) {
     f.rainRecent = $("#rainRecent").value;
     f.temp = $("#temp").value === "" ? null : +$("#temp").value;
     f.weatherNote = $("#wxNote").value.trim();
+    f.soil = $("#soil").value;
+    f.soilAuto = soilAuto && !!f.soil;
+    f.soilVwc = f.soilAuto ? soilVwc : null;
+    f.moon = moonPhase(f.foundAt);
     f.spore = f.type === "mushroom" ? (picked(form, "sporeChips")[0] || "") : "";
     f.gills = f.type === "mushroom" ? (picked(form, "gillChips")[0] || "") : "";
     f.substrate = picked(form, "subChips")[0] || "";
@@ -1486,9 +1576,9 @@ async function exportBackup() {
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
 async function exportCSV() {
-  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
+  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
   const q = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
+  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
   const ok = await saveFile(`spore-and-leaf-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
   if (ok) toast("Spreadsheet saved");
 }
