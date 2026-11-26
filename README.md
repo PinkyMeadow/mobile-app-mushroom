@@ -7,4 +7,9 @@ A field log for mushrooms and plants that works with no signal. You can photogra
 - `web/`: the source of the web app. Run `sh web/build.sh` to rebuild the hostable site.
 - `docs/`: the built site, served by GitHub Pages.
 
-A native Android app (an APK to sideload) will come next and reuse this web code.
+- `app/`: the Android app. It wraps the web app with Capacitor and adds native hike tracking (a foreground service that records GPS with the screen off), saving files to Downloads, and an update check.
+- `.github/workflows/android.yml`: builds and signs the APK on every push to `main` and publishes it as a GitHub release.
+
+**Install on Android:** open https://pinkymeadow.github.io/mobile-app-mushroom/android.html on the phone, or download [the latest APK](https://github.com/PinkyMeadow/mobile-app-mushroom/releases/latest/download/spore-leaf.apk).
+
+The signing key in `app/signing/` is committed on purpose so every build can install over the last one. Anyone could use it to sign an APK that claims to be this app, so only install builds from this repository's releases.

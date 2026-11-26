@@ -1,0 +1,7 @@
+{
+  "appId": "ca.sporeleaf.app",
+  "appName": "Spore & Leaf",
+  "webDir": "www",
+  "android": { "allowMixedContent": false },
+  "server": { "androidScheme": "https" }
+}

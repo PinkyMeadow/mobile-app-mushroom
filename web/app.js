@@ -55,6 +55,27 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DAY = 86400000;
+/* Android app: the GitHub build swaps in its build number here. */
+const APP_BUILD = 0;
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const nat = (method, opts) => window.Capacitor.nativePromise("TrailGPS", method, opts || {});
+const REPO = "PinkyMeadow/mobile-app-mushroom";
+const APK_URL = `https://github.com/${REPO}/releases/latest/download/spore-leaf.apk`;
+function openExternal(url) { if (NATIVE) nat("openUrl", { url }).catch(() => { location.href = url; }); else window.open(url, "_blank", "noopener"); }
+// Looks for a newer Android build on GitHub. Runs at most once a day unless asked.
+async function checkForUpdate(manual) {
+  if (!NATIVE || !netOK()) return manual ? { err: settings.camp ? "Turn off camping mode first." : "This needs signal." } : null;
+  if (!manual && Date.now() - lsGet("updChecked", 0) < DAY) return null;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) throw new Error("github");
+    const j = await r.json(), latest = parseInt(String(j.tag_name || "").replace(/\D+/g, ""), 10) || 0;
+    lsSet("updChecked", Date.now()); lsSet("updLatest", latest);
+    const res = { latest, newer: latest > APP_BUILD, notes: j.body || "" };
+    if (res.newer && !manual) toast(`Update available (build ${latest})`, { label: "Download", run: () => openExternal(APK_URL) });
+    return res;
+  } catch (e) { return manual ? { err: "Couldn't reach GitHub. Try again later." } : null; }
+}
 function toast(msg, action) {
   $$(".toast").forEach(t => t.remove());
   const t = document.createElement("div");
@@ -2447,34 +2468,49 @@ const trailListeners = new Set();
 function trailKm(pts) { let d = 0; for (let i = 1; i < pts.length; i++) d += haversine({ lat: pts[i-1][0], lng: pts[i-1][1] }, { lat: pts[i][0], lng: pts[i][1] }); return d; }
 function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; }
 async function holdScreen() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail && !settings.camp) holdScreen(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail && !settings.camp && !NATIVE) holdScreen(); });
 let trailTimer = null;
 const TRAIL_RATES = [[30, "Every 30 seconds"], [60, "Every minute"], [120, "Every 2 minutes"], [180, "Every 3 minutes"], [240, "Every 4 minutes"], [300, "Every 5 minutes"]];
 const trailRate = () => lsGet("trailRate", 120);
 // GPS stays off between fixes, so a longer gap means much less battery.
 function trailBatteryText(sec) {
+  if (NATIVE) return sec <= 30 ? "Roughly 3 to 5% battery an hour with the screen off." : sec <= 60 ? "Roughly 2 to 4% an hour with the screen off." : sec <= 180 ? "Roughly 1 to 3% an hour with the screen off." : "Roughly 1 to 2% an hour with the screen off.";
   return sec <= 30 ? "Roughly 6 to 10% battery an hour with the screen on." : sec <= 60 ? "Roughly 5 to 8% an hour with the screen on." : sec <= 180 ? "Roughly 4 to 6% an hour with the screen on." : "Roughly 3 to 5% an hour with the screen on.";
 }
+function addTrailFix(lat, lng, accuracy, altitude, ts, quiet) {
+  if (!activeTrail) return;
+  lastLoc = { lat, lng, acc: Math.round(accuracy), alt: altitude != null ? Math.round(altitude) : null, ts }; lsSet("lastLoc", lastLoc);
+  if (accuracy > 60 || ts < activeTrail.start) return;
+  const pts = activeTrail.points, prev = pts[pts.length - 1];
+  const alt = altitude != null ? Math.round(altitude) : null;
+  activeTrail.lastFix = Math.max(activeTrail.lastFix || 0, ts);
+  if (!(prev && (ts <= prev[2] || haversine({ lat: prev[0], lng: prev[1] }, { lat, lng }) < 0.006))) pts.push([+lat.toFixed(6), +lng.toFixed(6), ts, alt]);
+  if (!quiet) { lsSet("trailLive", activeTrail); trailListeners.forEach(fn => fn()); }
+}
+// Collects the fixes the Android app recorded while the screen was off.
+async function drainNativeTrail() {
+  if (!NATIVE) return;
+  try {
+    const r = await nat("drain");
+    const list = (r && r.points) || [];
+    list.forEach(p => addTrailFix(p.lat, p.lng, p.acc, p.alt, p.t, true));
+    if (activeTrail && (list.length || true)) { lsSet("trailLive", activeTrail); trailListeners.forEach(fn => fn()); }
+  } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail) drainNativeTrail(); });
 function watchTrail() {
   if (!geoAvailable() || trailWatch != null || trailTimer != null) return;
-  const onFix = p => {
-    if (!activeTrail) return;
-    const { latitude: lat, longitude: lng, accuracy, altitude } = p.coords;
-    lastLoc = { lat, lng, acc: Math.round(accuracy), alt: altitude != null ? Math.round(altitude) : null, ts: Date.now() }; lsSet("lastLoc", lastLoc);
-    if (accuracy > 60) return;
-    const pts = activeTrail.points, prev = pts[pts.length - 1];
-    const alt = altitude != null ? Math.round(altitude) : null;
-    if (prev && haversine({ lat: prev[0], lng: prev[1] }, { lat, lng }) < 0.006) { activeTrail.lastFix = Date.now(); lsSet("trailLive", activeTrail); trailListeners.forEach(fn => fn()); return; }
-    pts.push([+lat.toFixed(6), +lng.toFixed(6), Date.now(), alt]);
-    activeTrail.lastFix = Date.now();
-    lsSet("trailLive", activeTrail);
-    trailListeners.forEach(fn => fn());
-  };
+  if (NATIVE) {
+    nat("start", { interval: trailRate() }).catch(e => toast((e && e.message) || "Couldn't start GPS tracking."));
+    drainNativeTrail(); trailTimer = setInterval(drainNativeTrail, 15000);
+    return;
+  }
+  const onFix = p => { const { latitude, longitude, accuracy, altitude } = p.coords; addTrailFix(latitude, longitude, accuracy, altitude, Date.now()); };
   const once = () => navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
   once(); trailTimer = setInterval(once, trailRate() * 1000);
   if (!settings.camp) holdScreen();
 }
-function restartTrailWatch() { if (!activeTrail) return; if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; } if (trailTimer != null) { clearInterval(trailTimer); trailTimer = null; } try { if (wakeLock) wakeLock.release(); } catch (e) {} watchTrail(); }
+function restartTrailWatch() { if (!activeTrail) return; if (NATIVE) nat("stop").catch(() => {}); if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; } if (trailTimer != null) { clearInterval(trailTimer); trailTimer = null; } try { if (wakeLock) wakeLock.release(); } catch (e) {} watchTrail(); }
 // Distance, elevation gain and loss, moving time and pace, like a fitness app.
 function trailStats(t) {
   const pts = t.points || [];
@@ -2539,6 +2575,7 @@ function startTrail() {
   watchTrail();
 }
 async function stopTrail() {
+  if (NATIVE) { await drainNativeTrail(); await nat("stop").catch(() => {}); await drainNativeTrail(); }
   if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; }
   if (trailTimer != null) { clearInterval(trailTimer); trailTimer = null; }
   try { if (wakeLock) await wakeLock.release(); } catch (e) {}
@@ -2613,7 +2650,7 @@ async function renderMap() {
     const tp = $("#trailPanel"); if (!tp) return;
     if (activeTrail) {
       const km = trailKm(activeTrail.points);
-      tp.innerHTML = `<h3>Recording a hike</h3>${trailStatsHTML(activeTrail)}${batteryHTML()}<p class="hint num" style="margin:0">GPS checks ${esc(TRAIL_RATES.find(r => r[0] === trailRate())[1].toLowerCase())}${activeTrail.lastFix ? `, last ${esc(ago(activeTrail.lastFix))}` : ""}. ${esc(trailBatteryText(trailRate()))}</p>${sunsetHTML()}<p class="hint" style="margin:0">${settings.camp ? "Camping mode: the screen can turn off, but the web version only records while the app is open." : "The screen stays on while recording. The web version can't track while the phone is locked; the Android app will."}</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
+      tp.innerHTML = `<h3>Recording a hike</h3>${trailStatsHTML(activeTrail)}${batteryHTML()}<p class="hint num" style="margin:0">GPS checks ${esc(TRAIL_RATES.find(r => r[0] === trailRate())[1].toLowerCase())}${activeTrail.lastFix ? `, last ${esc(ago(activeTrail.lastFix))}` : ""}. ${esc(trailBatteryText(trailRate()))}</p>${sunsetHTML()}<p class="hint" style="margin:0">${NATIVE ? "You can lock the phone: it keeps recording, and a notification shows while it does." : settings.camp ? "Camping mode: the screen can turn off, but the web version only records while the app is open." : "The screen stays on while recording. The web version can't track while the phone is locked; the Android app will."}</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
       $("#trailStop").addEventListener("click", async () => { const ok = await stopTrail(); toast(ok ? "Trail saved" : "Trail too short to save"); renderMap(); });
     } else {
       tp.innerHTML = `<h3>Hikes</h3><p>Record your route with distance, climb, moving time, pace and an elevation profile. Finds you log while recording are linked to it.</p>
@@ -3272,6 +3309,11 @@ async function saveFile(filename, data, type) {
       if (d) { await d.save({ filename, data: new Blob([data], { type }) }); return true; }
     }
   } catch (e) { if (e && e.code === "declined") return false; }
+  // The Android app saves straight into the phone's Downloads folder.
+  if (NATIVE) {
+    try { const r = await nat("saveText", { filename, data: String(data), type }); toast(`Saved to ${r.where || "Downloads"}`); return true; }
+    catch (e) { toast("Couldn't save the file: " + ((e && e.message) || "unknown error")); return false; }
+  }
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement("a"); a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
@@ -3339,7 +3381,10 @@ async function renderSettings() {
   main.innerHTML = `<div class="wrap view"><div class="settings-list">
     <a class="banner danger" href="#safety" style="text-decoration:none"><svg><use href="#i-warn"/></svg><div class="grow"><b>Safety first.</b> Never eat anything based on this app. Read the safety notes.</div></a>
     <div class="panel"><label class="switch" for="campMode"><span><h3>Camping mode</h3><p>Makes the battery last as long as possible.</p></span><input type="checkbox" id="campMode" ${settings.camp ? "checked" : ""}></label>
-      <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on.</li></ul></div>
+      <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on${NATIVE ? " (the Android app records with the screen off anyway)" : ""}.</li></ul></div>
+    ${NATIVE ? `<div class="panel"><h3>App updates</h3><p>You have build <b class="num">${APP_BUILD}</b>.${lsGet("updLatest", 0) > APP_BUILD ? ` <b style="color:var(--plant)">Build ${lsGet("updLatest", 0)} is available.</b>` : ""}</p>
+      <div class="btn-row"><button class="btn small" type="button" id="updCheck">Check for update</button><button class="btn small plant" type="button" id="updGet" ${lsGet("updLatest", 0) > APP_BUILD ? "" : "hidden"}><svg><use href="#i-down"/></svg>Download update</button></div>
+      <p class="hint" id="updMsg" style="margin:0">Your finds stay on the phone when you update. After the download, tap the file to install it over this one.</p></div>` : /claude\.ai|claudeusercontent/.test(location.host) ? "" : `<a class="panel" href="android.html" style="text-decoration:none;color:inherit"><h3>Get the Android app</h3><p>Works fully offline and keeps recording hikes with the screen off. Tap for the download and install steps.</p></a>`}
     <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
     <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
@@ -3382,6 +3427,16 @@ async function renderSettings() {
   </div></div>`;
   $("#campMode").addEventListener("change", e => { settings.camp = e.target.checked; lsSet("camp", settings.camp); applyModes(); restartTrailWatch(); toast(settings.camp ? "Camping mode on" : "Camping mode off"); if (!settings.camp) inatProcess(); });
   $("#nightMode").addEventListener("change", e => { settings.night = e.target.checked; lsSet("night", settings.night); applyModes(); });
+  if (NATIVE) {
+    $("#updGet").addEventListener("click", () => openExternal(APK_URL));
+    $("#updCheck").addEventListener("click", async () => {
+      const msg = $("#updMsg"); msg.textContent = "Checking…";
+      const r = await checkForUpdate(true);
+      if (r.err) { msg.textContent = r.err; return; }
+      $("#updGet").hidden = !r.newer;
+      msg.textContent = r.newer ? `Build ${r.latest} is ready. Tap Download update, then open the file to install it. Your finds stay on the phone.` : "You have the latest version.";
+    });
+  }
   $("#fieldMode").addEventListener("change", e => { settings.field = e.target.checked; lsSet("field", settings.field); document.body.classList.toggle("field", settings.field); });
   // iNaturalist
   const ig = $("#inatGeo"); if (ig) { ig.value = lsGet("inatGeo", "obscured"); ig.addEventListener("change", () => lsSet("inatGeo", ig.value)); }
@@ -3438,7 +3493,8 @@ async function renderSettings() {
   if (activeTrail) watchTrail();
   if (new URLSearchParams(location.search).get("code")) inatFinishSignIn().then(() => { route(); inatProcess(); });
   else setTimeout(inatProcess, 1500);
-  if ("serviceWorker" in navigator && location.protocol === "https:" && !/claude\.ai|claudeusercontent/.test(location.host)) {
+  if (NATIVE) setTimeout(() => checkForUpdate(false), 4000);
+  if (!NATIVE && "serviceWorker" in navigator && location.protocol === "https:" && !/claude\.ai|claudeusercontent/.test(location.host)) {
     try { navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => reg.update()).catch(() => {}); const hadSW = !!navigator.serviceWorker.controller; navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadSW && !window.__swReloaded) { window.__swReloaded = true; location.reload(); } }); } catch (e) {}
   }
 })();

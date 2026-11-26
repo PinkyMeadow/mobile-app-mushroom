@@ -1,0 +1,17 @@
+{
+  "name": "spore-leaf-android",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Native Android shell for the Spore & Leaf web app",
+  "scripts": {
+    "www": "sh ../web/build.sh && rm -rf www && cp -r ../web/site www && rm -f www/sw.js",
+    "sync": "npm run www && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/core": "^8.6.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.3"
+  }
+}
