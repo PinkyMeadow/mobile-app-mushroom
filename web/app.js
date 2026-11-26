@@ -155,8 +155,11 @@ const LOOKALIKES = [
     ["Star of Bethlehem and other bulbs", "toxic", "No onion or garlic smell. Smell every plant."]] }
 ];
 const SCALE_REFS = [
-  ["card", "Bank card, long edge", 85.6], ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["gbp10p", "UK 10p coin", 24.5],
-  ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
+  ["card", "Credit, debit or gift card, long edge", 85.6], ["cardS", "Credit, debit or gift card, short edge", 53.98],
+  ["cad200", "Canadian toonie ($2)", 28.0], ["cad100", "Canadian loonie ($1)", 26.5], ["cad25", "Canadian quarter", 23.88],
+  ["cad5", "Canadian nickel", 21.2], ["cad10", "Canadian dime", 18.03], ["cad1", "Canadian penny", 19.05],
+  ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05],
+  ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
   ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10]
 ];
 function suggestLookalikes(text) {
@@ -1409,7 +1412,7 @@ function openScaleSheet(src, onUse) {
   let pts = [], lastCm = null;
   const step = () => {
     const s = $("#scStep", bg);
-    if (pts.length < 2) s.textContent = pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin or card, straight across its widest point.";
+    if (pts.length < 2) s.textContent = pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin, or one end of the card edge you picked, straight across.";
     else if (pts.length < 4) s.textContent = pts.length === 2 ? "Now tap one end of what you want to measure." : "Tap the other end.";
     else s.textContent = "Tap again to measure something else.";
   };
