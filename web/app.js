@@ -192,6 +192,7 @@ function normalise(f) {
   f.habitat = f.habitat || [];
   f.edibility = f.edibility || "unknown";
   f.lookalikes = f.lookalikes || [];
+  f.voice = f.voice || [];
   f.smell = f.smell || [];
   f.texture = f.texture || [];
   return f;
@@ -217,7 +218,7 @@ function getPosition(timeout = 12000) {
     if (!geoAvailable()) return rej(new Error("unavailable"));
     try {
       navigator.geolocation.getCurrentPosition(p => {
-        const loc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy), ts: Date.now() };
+        const loc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy), alt: p.coords.altitude != null ? Math.round(p.coords.altitude) : null, ts: Date.now() };
         lastLoc = loc; lsSet("lastLoc", loc);
         res(loc);
       }, e => rej(e), { enableHighAccuracy: true, timeout, maximumAge: 30000 });
@@ -362,13 +363,22 @@ function moonIcon(age) {
    Maps: OpenStreetMap tiles, cached on the device for offline use.
    ============================================================ */
 const hasLeaflet = typeof L !== "undefined";
-const TILE_URL = (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+const TILE_LAYERS = {
+  osm: { name: "Street", prefix: "", max: 19, url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+    attr: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' },
+  topo: { name: "Topo", prefix: "topo/", max: 17, url: (z, x, y) => `https://${"abc"[(x + y) % 3]}.tile.opentopomap.org/${z}/${x}/${y}.png`,
+    attr: 'Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>, SRTM · style &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA)' },
+  hike: { name: "Hiking trails", prefix: "hike/", max: 18, overlay: true, url: (z, x, y) => `https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`,
+    attr: 'Trails &copy; <a href="https://hiking.waymarkedtrails.org" target="_blank" rel="noopener">Waymarked Trails</a>' }
+};
+const TILE_URL = TILE_LAYERS.osm.url;
 const OfflineTiles = hasLeaflet ? L.TileLayer.extend({
   createTile(coords, done) {
+    const lay = TILE_LAYERS[this.options.layerId] || TILE_LAYERS.osm;
     const img = document.createElement("img");
     img.alt = ""; img.setAttribute("role", "presentation");
-    const key = `${coords.z}/${coords.x}/${coords.y}`;
-    const net = () => { img.onload = () => done(null, img); img.onerror = () => done(new Error("tile"), img); img.src = TILE_URL(coords.z, coords.x, coords.y); };
+    const key = `${lay.prefix}${coords.z}/${coords.x}/${coords.y}`;
+    const net = () => { img.onload = () => done(null, img); img.onerror = () => done(new Error("tile"), img); img.src = lay.url(coords.z, coords.x, coords.y); };
     store.get("tiles", key).then(blob => {
       if (!blob) return net();
       const u = URL.createObjectURL(blob);
@@ -382,7 +392,16 @@ const OfflineTiles = hasLeaflet ? L.TileLayer.extend({
 function makeMap(el, center, zoom, opts = {}) {
   if (!hasLeaflet) { el.innerHTML = '<p class="hint" style="padding:16px">The map couldn\'t load.</p>'; return null; }
   const m = L.map(el, { zoomControl: true, attributionControl: true, ...opts }).setView(center, zoom);
-  new OfflineTiles("", { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }).addTo(m);
+  const mk = id => new OfflineTiles("", { layerId: id, maxZoom: 19, maxNativeZoom: TILE_LAYERS[id].max, attribution: TILE_LAYERS[id].attr, className: TILE_LAYERS[id].overlay ? "overlay-tiles" : "" });
+  const bases = { osm: mk("osm"), topo: mk("topo") };
+  const hike = mk("hike");
+  const baseId = lsGet("mapBase", "osm");
+  (bases[baseId] || bases.osm).addTo(m);
+  if (lsGet("mapHike", false)) hike.addTo(m);
+  m._layerIds = () => [m.hasLayer(bases.topo) ? "topo" : "osm", ...(m.hasLayer(hike) ? ["hike"] : [])];
+  L.control.layers({ Street: bases.osm, Topo: bases.topo }, { "Hiking trails": hike }, { position: "topright" }).addTo(m);
+  m.on("baselayerchange", e => lsSet("mapBase", e.layer === bases.topo ? "topo" : "osm"));
+  m.on("overlayadd overlayremove", e => { if (e.layer === hike) lsSet("mapHike", e.type === "overlayadd"); });
   m.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
   maps.push(m);
   setTimeout(() => m.invalidateSize(), 60);
@@ -407,14 +426,15 @@ function tilesFor(b, zMin, zMax) {
 const MAX_TILES = 1500;
 let downloading = false;
 async function downloadTiles(list, onProgress) {
+  // list items: [layerId, z, x, y]
   downloading = true;
   let done = 0, failed = 0, i = 0;
   async function worker() {
     while (i < list.length && downloading) {
-      const [z, x, y] = list[i++], key = `${z}/${x}/${y}`;
+      const [id, z, x, y] = list[i++], lay = TILE_LAYERS[id], key = `${lay.prefix}${z}/${x}/${y}`;
       try {
         if (!(await store.get("tiles", key))) {
-          const r = await fetch(TILE_URL(z, x, y), { mode: "cors" });
+          const r = await fetch(lay.url(z, x, y), { mode: "cors" });
           if (!r.ok) throw new Error(r.status);
           await store.put("tiles", await r.blob(), key);
         }
@@ -491,7 +511,7 @@ async function seedExamples() {
 async function removeExamples() {
   for (const f of finds.filter(f => f.sample)) {
     await store.del("finds", f.id);
-    for (const p of f.photos) await store.del("photos", p.key);
+    for (const p of [...f.photos, ...(f.voice || [])]) await store.del("photos", p.key);
   }
   await loadFinds();
 }
@@ -520,6 +540,7 @@ async function route() {
   if (h.startsWith("find-")) return renderDetail(h.slice(5));
   if (h === "map") return renderMap();
   if (h === "season") return renderSeason();
+  if (h === "edibles") return renderEdibles();
   if (h === "more") return renderSettings();
   if (h === "safety") return renderSafety();
   return renderLog();
@@ -541,7 +562,7 @@ async function quickLog(file) {
     const f = normalise({
       id: uid(), type: lsGet("lastType", "mushroom"), name: "", photos: [{ key, label: "Whole" }],
       lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, acc: loc ? loc.acc ?? null : null, locSource: src,
-      foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, moon: moonPhase(nowISO),
+      foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, moon: moonPhase(nowISO), inatQueued: inat.connected() && lsGet("inatAuto", true) ? true : undefined,
       width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "",
       weather: [], rainRecent: "", temp: null, weatherNote: ""
     });
@@ -554,6 +575,7 @@ async function quickLog(file) {
     if (loc && navigator.onLine) fetchWeather(loc.lat, loc.lng, f.foundAt).then(async w => {
       const cur = finds.find(x => x.id === f.id); if (!cur || cur.weather.length) return;
       Object.assign(cur, { weather: w.chips, temp: w.temp, rainRecent: w.rainRecent, weatherNote: w.note, soil: w.soil, soilVwc: w.soilVwc, soilAuto: !!w.soil, wxAuto: true });
+      try { Object.assign(cur, await fetchTerrain(loc.lat, loc.lng)); } catch (e) {}
       await store.put("finds", cur);
     }).catch(() => {});
   } catch (e) { toast(e.message || "Couldn't save that photo"); }
@@ -595,7 +617,7 @@ function cardHTML(f) {
     <img class="thumb" data-photo="${esc(cover(f) || "")}" alt="">
     <div class="card-body">
       <div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}</div>
-      <div class="meta"><span class="dot ${f.type}"></span><span>${f.type === "plant" ? "Plant" : "Mushroom"}</span>${f.needsDetails ? '<span class="badge-todo">Add details</span>' : ""}${f.revisit ? '<span class="badge-rv">Revisit</span>' : ""}${f.sample ? '<span class="badge-ex">Example</span>' : ""}</div>
+      <div class="meta"><span class="dot ${f.type}"></span><span>${f.type === "plant" ? "Plant" : "Mushroom"}</span>${f.needsDetails ? '<span class="badge-todo">Add details</span>' : ""}${f.revisit ? '<span class="badge-rv">Revisit</span>' : ""}${f.inat && f.inat.quality === "research" ? '<span class="badge-rv">iNat confirmed</span>' : ""}${f.sample ? '<span class="badge-ex">Example</span>' : ""}${f.sharedFrom ? `<span class="badge-rv" style="color:var(--shroom);border-color:color-mix(in srgb, var(--shroom) 50%, transparent)">From ${esc(f.sharedFrom)}</span>` : ""}${!f.photos.length && f.voice.length ? '<span class="badge-rv">Voice</span>' : ""}</div>
       <div class="meta num"><span>${esc(dateStr)}</span><span class="sep">${esc(fmtTime(f.foundAt))}</span>${dist ? `<span class="sep">${esc(dist)} away</span>` : f.lat == null ? '<span class="sep">No location</span>' : ""}</div>
     </div>
   </a>`;
@@ -613,6 +635,8 @@ function renderLog() {
     ${finds.some(f => f.sample) ? `<div class="banner warn"><svg><use href="#i-warn"/></svg><div class="grow">The finds marked <b>Example</b> show how the log looks. They'll disappear when you save your first find.</div></div>` : ""}
     <label class="quick" for="quickIn"><span class="qi"><svg><use href="#i-bolt"/></svg></span><span><b>Quick log</b><span>One tap: photo, location and time saved now. Add the details later.</span></span></label>
     <input class="sr" type="file" id="quickIn" accept="image/*" capture="environment">
+    ${canRecord() ? `<button type="button" class="quick" id="voiceQuick" style="text-align:left;color:inherit;font:inherit"><span class="qi" style="background:var(--plant);color:var(--plant-ink)"><svg><use href="#i-mic"/></svg></span><span><b>Voice log</b><span>Hands-free: say what you found. Location and time are saved too.</span></span></button>` : ""}
+    <div id="fruitBanner"></div>
     <div class="toolbar">
       <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="q" placeholder="Search names, notes and #tags" value="${esc(view.q)}" autocomplete="off" enterkeyhint="search" aria-label="Search finds"></div>
       <div class="seg" role="group" aria-label="Show" id="filterSeg"></div>
@@ -626,10 +650,17 @@ function renderLog() {
           <option value="name">Name, A to Z</option>
         </select></div>
       <div id="sortNote"></div>
+      <div id="sunLine">${sunsetHTML()}</div>
     </div>
     <div id="results" style="display:flex;flex-direction:column;gap:16px"></div>
   </div>`;
   $("#sortSel").value = view.sort;
+  const vq = $("#voiceQuick"); if (vq) vq.addEventListener("click", () => voiceQuickLog(vq));
+  checkFruiting(false).then(r => {
+    const hits = (r && r.hits || []).filter(h => finds.some(f => f.id === h.id));
+    const fb = $("#fruitBanner"); if (!fb || !hits.length) return;
+    fb.innerHTML = `<a class="banner" href="#season" style="text-decoration:none;background:color-mix(in srgb, var(--plant) 16%, var(--surface));color:var(--fg)"><svg style="color:var(--plant)"><use href="#i-cloud"/></svg><div class="grow"><b>${hits.length} past ${hits.length === 1 ? "spot looks" : "spots look"} good right now.</b> In season, with rain this week. See the Season tab.</div></a>`;
+  }).catch(() => {});
   $("#quickIn").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) quickLog(f); });
   $("#q").addEventListener("input", e => { view.q = e.target.value.trim(); renderResults(); });
   $("#sortSel").addEventListener("change", async e => {
@@ -713,6 +744,7 @@ async function renderDetail(id) {
   if (f.smell.length) idBits.push(`<div class="fact"><span class="eyebrow">Smell</span><span class="v">${esc(f.smell.join(", "))}</span></div>`);
   if (f.texture.length) idBits.push(`<div class="fact"><span class="eyebrow">Texture</span><span class="v">${esc(f.texture.join(", "))}</span></div>`);
   if (isShroom && f.bruise) idBits.push(`<div class="fact"><span class="eyebrow">Bruising</span><span class="v">${esc(f.bruise)}${f.bruiseNote ? `<small><br>${esc(f.bruiseNote)}</small>` : ""}</span></div>`);
+  if (f.elev != null || f.slope != null) idBits.push(`<div class="fact"><span class="eyebrow">Terrain</span><span class="v">${esc(terrainText(f))}</span></div>`);
   if (f.trees) idBits.push(`<div class="fact"><span class="eyebrow">Nearby trees</span><span class="v">${esc(f.trees)}</span></div>`);
 
   main.innerHTML = `<div class="wrap view">
@@ -720,7 +752,7 @@ async function renderDetail(id) {
     ${f.photos.length ? `<img class="hero-photo" id="heroImg" alt="Photo of ${esc(f.name || "this find")}">` : ""}
     ${f.photos.length > 1 ? `<div class="strip" id="strip">${f.photos.map((p, i) => `<button type="button" data-i="${i}" aria-pressed="${i === 0}" aria-label="Show ${esc(p.label || "photo " + (i + 1))}"><img data-photo="${esc(p.key)}" alt=""><small>${esc(p.label || "Photo")}</small></button>`).join("")}</div>` : ""}
     <div class="detail-head">
-      <div class="btn-row" style="gap:8px"><span class="type-pill ${f.type}"><span class="dot ${f.type}"></span>${isShroom ? "Mushroom" : "Plant"}${f.sample ? " · Example" : ""}</span><span class="edib ${esc(f.edibility)}">${esc(edibLabel(f.edibility))}</span></div>
+      <div class="btn-row" style="gap:8px"><span class="type-pill ${f.type}"><span class="dot ${f.type}"></span>${isShroom ? "Mushroom" : "Plant"}${f.sample ? " · Example" : ""}</span><span class="edib ${esc(f.edibility)}">${esc(edibLabel(f.edibility))}</span>${f.sharedFrom ? `<span class="edib">From ${esc(f.sharedFrom)}</span>` : ""}</div>
       <h2>${esc(f.name || "Not yet identified")}</h2>
       <div class="meta num" style="font-size:15px"><span>${esc(fmtDate(f.foundAt, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</span><span class="sep">${esc(fmtTime(f.foundAt))}</span><span class="sep">${esc(timeOfDay(new Date(f.foundAt)))}</span></div>
       ${f.tags.length ? `<div class="chips" style="gap:6px">${f.tags.map(t => `<span class="tag" style="cursor:default">#${esc(t)}</span>`).join("")}</div>` : ""}
@@ -729,6 +761,12 @@ async function renderDetail(id) {
     ${f.idApp && (f.idApp.result || f.idApp.confidence != null) ? `<div class="section"><h3>Identification</h3><div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))"><div class="fact"><span class="eyebrow">${esc(f.idApp.source || "Shroom ID")} says</span><span class="v">${esc(f.idApp.result || "—")}</span></div><div class="fact"><span class="eyebrow">Confidence</span><span class="v num">${f.idApp.confidence != null ? esc(f.idApp.confidence) + "<small> %</small>" : "—"}</span></div></div><p class="hint">An app's suggestion, not a confirmed identification.</p></div>` : ""}
     ${f.lookalikes.length ? `<div class="section"><h3>Lookalikes</h3><div class="settings-list">${f.lookalikes.map(l => `<div class="panel" style="gap:6px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><b style="min-width:0">${esc(l.name)}</b><span class="edib ${esc(l.danger || "unknown")}" style="flex:none">${esc({ deadly: "Deadly", toxic: "Toxic", inedible: "Inedible" }[l.danger] || "Check")}</span></div>${l.how ? `<p>${esc(l.how)}</p>` : ""}<p style="color:${l.ruledOut ? "var(--plant)" : "var(--danger)"};font-weight:700">${l.ruledOut ? "Ruled out" : "Not ruled out yet"}${l.note ? `<span style="font-weight:400;color:var(--muted)">: ${esc(l.note)}</span>` : ""}</p></div>`).join("")}</div><p class="hint">This list isn't complete. Ruling these out doesn't make a find safe to eat.</p></div>` : ""}
     ${f.trailId ? `<p class="coords">Found while recording a trail. <a href="#map" style="color:var(--plant)">See trails on the map</a></p>` : ""}
+    ${f.inat && f.inat.id ? `<div class="panel" id="inatPanel"><h3>iNaturalist</h3>
+        <p><span class="${f.inat.quality === "research" ? "due" : ""}">${esc(inatQualityLabel(f.inat.quality))}</span></p>
+        ${f.inat.taxon ? `<p style="color:var(--fg)">Community ID: <b>${esc(f.inat.common ? f.inat.common + " (" + f.inat.taxon + ")" : f.inat.taxon)}</b>${f.inat.rank && f.inat.rank !== "species" ? ` · ${esc(f.inat.rank)}` : ""}${f.inat.idCount ? ` · ${f.inat.agree} of ${f.inat.idCount} ${f.inat.idCount === 1 ? "person agrees" : "people agree"}` : ""}</p>` : `<p>No IDs yet. Experts usually look within a few days.</p>`}
+        <div class="btn-row"><a class="btn small" href="${esc(f.inat.url)}" target="_blank" rel="noopener">Open on iNaturalist</a><button class="btn small ghost" type="button" id="inatSync">Check for new IDs</button>${f.inat.taxon && f.inat.taxon !== f.name ? `<button class="btn small ghost" type="button" id="inatUse">Use as name</button>` : ""}</div>
+        ${f.inat.syncedAt ? `<p class="hint">Checked ${esc(ago(f.inat.syncedAt))}. Even a research-grade ID doesn't mean it's safe to eat.</p>` : ""}</div>`
+      : f.inatQueued ? `<div class="panel"><h3>iNaturalist</h3><p>Waiting to upload. It goes as soon as you have signal${f.lat == null ? ", once the find has a location" : ""}.</p></div>` : ""}
     ${nv ? `<div class="panel"><h3>Revisit this spot</h3><p><span class="due">${esc(visitLabel(nv.days))}</span>. Check around ${esc(fmtDate(nv.date.toISOString(), { day: "numeric", month: "long" }))}${nv.date.getFullYear() !== new Date().getFullYear() ? " next year" : ""}.</p></div>` : ""}
     <div class="facts">
       <div class="fact"><span class="eyebrow">Width</span><span class="v num">${measureVal(f.width)}</span></div>
@@ -755,6 +793,9 @@ async function renderDetail(id) {
       : `<p style="color:var(--muted)">No location saved. <a href="#edit-${esc(f.id)}" style="color:var(--shroom)">Pin it on the map</a>.</p>`}
     </div>
     <div class="section"><h3>Entry</h3><p class="coords num">Logged ${esc(fmtDate(f.createdAt))} at ${esc(fmtTime(f.createdAt))}${f.updatedAt && f.updatedAt !== f.createdAt ? ` · last edited ${esc(fmtDate(f.updatedAt))} at ${esc(fmtTime(f.updatedAt))}` : ""}</p></div>
+    <div id="voiceBox" class="section"></div>
+    <div class="btn-row">${f.lat != null ? '<button class="btn plant" type="button" id="compassBtn"><svg><use href="#i-gps"/></svg>Guide me here</button>' : ""}<button class="btn" type="button" id="shareOne"><svg><use href="#i-share"/></svg>Share with a buddy</button></div>
+    ${f.blurred ? `<p class="hint">${esc(f.sharedFrom || "Your buddy")} hid the exact spot, so the location is only accurate to about 1 km.</p>` : ""}
     <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Delete</button></div>
   </div>`;
   if (f.photos.length) {
@@ -768,12 +809,23 @@ async function renderDetail(id) {
     const m = makeMap($("#miniMap"), [f.lat, f.lng], 15, { dragging: !L.Browser.mobile, scrollWheelZoom: false });
     L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(m);
   }
+  voicePlayersHTML(f.voice).then(h => { const vb = $("#voiceBox"); if (vb && h) vb.innerHTML = `<h3>Voice notes</h3>${h}`; });
+  const isb = $("#inatSync");
+  if (isb) isb.addEventListener("click", async () => { isb.disabled = true; try { await inatSyncOne(f); await loadFinds(); toast("Checked iNaturalist"); renderDetail(id); } catch (e) { toast(e.message === "token_expired" ? "Your iNaturalist sign-in has expired. Reconnect under More." : "Couldn't reach iNaturalist"); isb.disabled = false; } });
+  const iu = $("#inatUse");
+  if (iu) iu.addEventListener("click", async () => { f.name = f.inat.common ? `${f.inat.common}, ${f.inat.taxon}` : f.inat.taxon; f.updatedAt = new Date().toISOString(); await store.put("finds", f); await loadFinds(); toast("Name updated"); renderDetail(id); });
+  const cb = $("#compassBtn"); if (cb) cb.addEventListener("click", () => openCompass(f));
+  $("#shareOne").addEventListener("click", () => {
+    const row = $("#shareOne").parentElement;
+    row.outerHTML = `<div class="panel" id="sharePanel"><h3>Share this find</h3><label class="switch" for="blurOne"><span>Hide the exact spot (about 1 km)</span><input type="checkbox" id="blurOne" checked></label><div class="btn-row"><button class="btn small primary" type="button" id="shareGo"><svg><use href="#i-share"/></svg>Share</button></div><p class="hint">Sends a file by message, email or Drive. Your buddy opens it in Spore & Leaf under More.</p></div>`;
+    $("#shareGo").addEventListener("click", () => sendShare([f], $("#blurOne").checked));
+  });
   $("#delBtn").addEventListener("click", () => {
     $("#delRow").innerHTML = `<div class="banner danger" style="width:100%"><div class="grow">Delete this find and its ${f.photos.length === 1 ? "photo" : "photos"}? This can't be undone.</div></div><button class="btn danger" type="button" id="delYes">Yes, delete</button><button class="btn ghost" type="button" id="delNo">Keep it</button>`;
     $("#delNo").addEventListener("click", () => renderDetail(id));
     $("#delYes").addEventListener("click", async () => {
       await store.del("finds", f.id);
-      for (const p of f.photos) await store.del("photos", p.key);
+      for (const p of [...f.photos, ...f.voice]) await store.del("photos", p.key);
       await loadFinds(); toast("Find deleted"); location.hash = "log";
     });
   });
@@ -847,6 +899,7 @@ async function renderForm(id) {
         </div>
         <div class="btn-row"><button class="btn small ghost" type="button" id="useIdName">Use as name</button></div>
       </div>
+      ${inat.connected() ? `<label class="switch panel" for="inatQ"><span><b>Send to iNaturalist for expert ID</b><br><span class="hint">${f.inat && f.inat.id ? "Already on iNaturalist." : "Uploads when you have signal. Needs a location."}</span></span><input type="checkbox" id="inatQ" ${f.inat && f.inat.id ? "checked disabled" : (f.inatQueued || (!existing && lsGet("inatAuto", true))) ? "checked" : ""}></label>` : ""}
       <div class="field"><label for="edib">Edibility</label>
         <select id="edib">${EDIBILITY.map(([v, l]) => `<option value="${v}" ${f.edibility === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <span class="hint" id="edibHint">Only mark a find edible once an expert has checked it in person. Never eat anything based on an app.</span></div>
@@ -877,6 +930,7 @@ async function renderForm(id) {
           <button class="btn small ghost" type="button" id="clearLoc" hidden>Clear</button>
         </div>
       </div>
+      <div class="coords num" id="terrainLine"></div>
       <label class="switch panel" for="revisit"><span><b>Revisit this spot</b><br><span class="hint">Remind me to check here around this date next year.</span></span><input type="checkbox" id="revisit" ${f.revisit ? "checked" : ""}></label>
     </fieldset>
 
@@ -925,7 +979,9 @@ async function renderForm(id) {
     </fieldset>
 
     <fieldset><legend>Description</legend>
-      <div class="field"><label for="desc">Describe it</label><textarea id="desc">${esc(f.description)}</textarea></div>
+      <div class="field"><label for="desc">Describe it</label><textarea id="desc">${esc(f.description)}</textarea>
+        ${SpeechRec ? '<div class="btn-row"><button class="btn small" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button></div>' : ""}</div>
+      ${canRecord() ? `<div class="lbl">Voice notes</div><div id="voiceList" class="settings-list"></div><div class="btn-row"><button class="btn small" type="button" id="recBtn"><svg><use href="#i-mic"/></svg><span>Record a voice note</span></button></div><span class="hint">Voice notes work with no signal. Dictation turns speech into text, and on most phones it needs signal.</span>` : ""}
       <div class="field"><label for="tags">Tags</label><input type="text" id="tags" placeholder="e.g. #oak-woods, #autumn, #river-walk" value="${esc(f.tags.map(t => "#" + t).join(", "))}"><span class="hint">Separate tags with commas. Tap a tag on the Finds screen to filter by it.</span></div>
     </fieldset>
 
@@ -966,6 +1022,7 @@ async function renderForm(id) {
   let looks = f.lookalikes.map(l => ({ ...l }));
   const dangerLabel = { deadly: "Deadly", toxic: "Toxic", inedible: "Inedible", unknown: "Check" };
   function syncLooks() {
+    if (!document.body.contains(form)) return;
     const sugg = suggestLookalikes($("#name").value + " " + $("#idResult").value);
     // Drop untouched suggestions that no longer match, then add new ones.
     looks = looks.filter(l => !l.suggested || l.ruledOut || l.note || sugg.some(s => s.name === l.name));
@@ -1081,7 +1138,12 @@ async function renderForm(id) {
     $("#clearLoc").hidden = !ok;
     wxRow();
   }
-  function setLoc(loc, src) { f.lat = loc.lat; f.lng = loc.lng; f.acc = loc.acc ?? null; f.locSource = src; showLoc(); }
+  function setLoc(loc, src) {
+    const moved = f.lat == null || haversine({ lat: f.lat, lng: f.lng }, loc) > 0.03;
+    f.lat = loc.lat; f.lng = loc.lng; f.acc = loc.acc ?? null; f.locSource = src;
+    if (moved) { f.slope = null; f.aspect = null; f.elev = loc.alt ?? null; f.elevSrc = loc.alt != null ? "gps" : null; }
+    showLoc(); if (typeof fillTerrain === "function") { showTerrain(); fillTerrain(); }
+  }
   async function tryGPS(auto) {
     showLoc("Finding your location…");
     $("#gpsBtn").disabled = true;
@@ -1149,6 +1211,44 @@ async function renderForm(id) {
   if (!existing && geoAvailable()) tryGPS(true);
   else if (!geoAvailable()) $("#gpsBtn").hidden = true;
 
+  // Voice notes and dictation
+  let voices = f.voice.map(v => ({ ...v }));
+  const removedVoice = [];
+  async function drawVoices() {
+    const vl = $("#voiceList"); if (!vl) return;
+    const rows = [];
+    for (let i = 0; i < voices.length; i++) {
+      const v = voices[i];
+      const src = v.blob ? (v.url ||= URL.createObjectURL(v.blob)) : await store.get("photos", v.key).then(r => r ? URL.createObjectURL(r) : "").catch(() => "");
+      rows.push(`<div class="switch"><audio controls preload="metadata" src="${src}" style="width:100%;min-width:0"></audio><button type="button" class="btn small ghost" data-vx="${i}" aria-label="Remove voice note">Remove</button></div>`);
+    }
+    vl.innerHTML = rows.join("");
+  }
+  drawVoices();
+  const vlist = $("#voiceList");
+  if (vlist) vlist.addEventListener("click", e => { const x = e.target.closest("[data-vx]"); if (x) { const [v] = voices.splice(+x.dataset.vx, 1); if (v.key) removedVoice.push(v.key); drawVoices(); } });
+  const recBtn = $("#recBtn");
+  if (recBtn) recBtn.addEventListener("click", async () => {
+    if (recBtn._rec) { const { blob, secs } = await recBtn._rec.stop(); recBtn._rec = null; $("span", recBtn).textContent = "Record a voice note"; voices.push({ blob, secs, at: new Date().toISOString() }); drawVoices(); return; }
+    try { recBtn._rec = await recordVoice(s => { $("span", recBtn).textContent = `Stop recording (${s}s)`; }); $("span", recBtn).textContent = "Stop recording"; }
+    catch (e) { toast("Couldn't use the microphone. Check its permission for this site."); }
+  });
+  const dictBtn = $("#dictBtn");
+  if (dictBtn) dictBtn.addEventListener("click", () => { if (dictBtn._r) dictBtn._r.stop(); else dictateInto($("#desc"), dictBtn); });
+
+  // Terrain: GPS height straight away, slope from the elevation model when there's signal.
+  function showTerrain() { $("#terrainLine").textContent = terrainText(f) ? "Terrain: " + terrainText(f) : ""; }
+  let terrainFor = null;
+  async function fillTerrain() {
+    if (f.lat == null || !navigator.onLine) return;
+    const sig = `${f.lat.toFixed(4)},${f.lng.toFixed(4)}`;
+    if (sig === terrainFor) return;
+    terrainFor = sig;
+    try { Object.assign(f, await fetchTerrain(f.lat, f.lng)); f.elevSrc = "model"; } catch (e) {}
+    showTerrain();
+  }
+  showTerrain();
+
   // Save
   form.addEventListener("submit", async e => {
     e.preventDefault();
@@ -1168,6 +1268,14 @@ async function renderForm(id) {
     f.soilAuto = soilAuto && !!f.soil;
     f.soilVwc = f.soilAuto ? soilVwc : null;
     f.moon = moonPhase(f.foundAt);
+    const iq = $("#inatQ"); if (iq && !(f.inat && f.inat.id)) { if (iq.checked) f.inatQueued = true; else delete f.inatQueued; }
+    const savedVoice = [];
+    for (const v of voices) {
+      if (v.blob) { const key = "v-" + uid(); await store.put("photos", v.blob, key); savedVoice.push({ key, secs: v.secs, at: v.at }); }
+      else savedVoice.push({ key: v.key, secs: v.secs, at: v.at });
+    }
+    f.voice = savedVoice;
+    for (const k of removedVoice) await store.del("photos", k);
     f.spore = f.type === "mushroom" ? (picked(form, "sporeChips")[0] || "") : "";
     f.gills = f.type === "mushroom" ? (picked(form, "gillChips")[0] || "") : "";
     f.substrate = picked(form, "subChips")[0] || "";
@@ -1201,6 +1309,7 @@ async function renderForm(id) {
       if (!existing && finds.some(x => x.sample)) await removeExamples();
       await loadFinds();
       toast(existing ? "Changes saved" : "Find saved");
+      if (f.inatQueued) setTimeout(inatProcess, 500);
       location.hash = "find-" + f.id;
     } catch (err) {
       $("#saveBtn").disabled = false;
@@ -1237,6 +1346,541 @@ function openPinSheet(f, onPick) {
   bg.addEventListener("click", e => { if (e.target === bg) close(); });
   $("#pinOk", bg).addEventListener("click", () => { if (pick) onPick(pick); close(); });
 }
+
+
+/* ============================================================
+   Terrain: elevation and which way the slope faces.
+   ============================================================ */
+const COMPASS16 = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+const compassName = deg => COMPASS16[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
+async function fetchTerrain(lat, lng) {
+  // Five heights around the spot from a 90 m elevation model, roughly 100 m apart.
+  const dLat = 0.0009, dLng = 0.0009 / Math.cos(lat * Math.PI / 180);
+  const pts = [[lat, lng], [lat + dLat, lng], [lat - dLat, lng], [lat, lng + dLng], [lat, lng - dLng]];
+  const u = `https://api.open-meteo.com/v1/elevation?latitude=${pts.map(q => q[0].toFixed(5)).join(",")}&longitude=${pts.map(q => q[1].toFixed(5)).join(",")}`;
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 10000);
+  let r; try { r = await fetch(u, { signal: ctl.signal }); } finally { clearTimeout(t); }
+  if (!r.ok) throw new Error("elevation " + r.status);
+  const [c, n, s, e, w] = (await r.json()).elevation;
+  const dist = 0.0009 * 111320;
+  const dzdx = (e - w) / (2 * dist), dzdy = (n - s) / (2 * dist);
+  const slope = Math.atan(Math.hypot(dzdx, dzdy)) * 180 / Math.PI;
+  const aspect = (Math.atan2(-dzdx, -dzdy) * 180 / Math.PI + 360) % 360;
+  return { elev: Math.round(c), slope: Math.round(slope), aspect: slope < 2 ? null : Math.round(aspect) };
+}
+function terrainText(f) {
+  const bits = [];
+  if (f.elev != null) bits.push(`${settings.units === "in" ? Math.round(f.elev * 3.281) + " ft" : f.elev + " m"} up`);
+  if (f.slope != null) bits.push(f.aspect == null ? "flat ground" : `${f.slope}° slope facing ${compassName(f.aspect)}`);
+  return bits.join(" · ");
+}
+
+/* ============================================================
+   Fruiting now: past mushroom spots, in season, that just got rain.
+   ============================================================ */
+const dayOfYear = d => { const x = new Date(d); return Math.floor((x - new Date(x.getFullYear(), 0, 0)) / DAY); };
+function inSeason(f, now = new Date()) { const diff = Math.abs(dayOfYear(f.foundAt) - dayOfYear(now)); return Math.min(diff, 365 - diff) <= 21; }
+function fruitingCandidates() { return finds.filter(f => f.type === "mushroom" && f.lat != null && !f.sample && new Date(f.foundAt).getFullYear() < new Date().getFullYear() + 1 && (Date.now() - new Date(f.foundAt)) / DAY > 200 && inSeason(f)); }
+async function checkFruiting(force) {
+  const cached = lsGet("fruiting", null);
+  if (!force && cached && Date.now() - cached.ts < 6 * 3600000) return cached;
+  if (!navigator.onLine) return cached;
+  const cands = fruitingCandidates();
+  const groups = new Map();
+  for (const f of cands) { const k = `${f.lat.toFixed(2)},${f.lng.toFixed(2)}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(f); }
+  const keys = [...groups.keys()].slice(0, 40);
+  const out = { ts: Date.now(), hits: [] };
+  if (keys.length) {
+    const lat = keys.map(k => k.split(",")[0]).join(","), lng = keys.map(k => k.split(",")[1]).join(",");
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=precipitation_sum,temperature_2m_mean&past_days=7&forecast_days=1&timezone=auto`);
+    if (!r.ok) throw new Error("weather " + r.status);
+    let j = await r.json(); if (!Array.isArray(j)) j = [j];
+    keys.forEach((k, i) => {
+      const d = j[i] && j[i].daily; if (!d) return;
+      const rain = d.precipitation_sum.slice(0, 7).reduce((s, x) => s + (x || 0), 0);
+      const temps = d.temperature_2m_mean.slice(0, 7).filter(x => x != null);
+      const temp = temps.reduce((s, x) => s + x, 0) / (temps.length || 1);
+      if (rain >= 10 && temp >= 4 && temp <= 24) for (const f of groups.get(k)) out.hits.push({ id: f.id, rain: +rain.toFixed(1), temp: Math.round(temp) });
+    });
+  }
+  const before = new Set((cached && cached.hits || []).map(h => h.id));
+  lsSet("fruiting", out);
+  const fresh = out.hits.filter(h => !before.has(h.id));
+  if (fresh.length && "Notification" in window && Notification.permission === "granted") {
+    try { new Notification("Spore & Leaf", { body: `${fresh.length} of your past spots ${fresh.length === 1 ? "looks" : "look"} good right now: in season and rain this week.`, icon: "icon.svg" }); } catch (e) {}
+  }
+  return out;
+}
+
+/* ============================================================
+   Compass back to a pin, with calibration.
+   ============================================================ */
+function bearingTo(a, b) {
+  const rad = x => x * Math.PI / 180, deg = x => x * 180 / Math.PI;
+  const y = Math.sin(rad(b.lng - a.lng)) * Math.cos(rad(b.lat));
+  const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lng - a.lng));
+  return (deg(Math.atan2(y, x)) + 360) % 360;
+}
+const angDiff = (a, b) => ((a - b + 540) % 360) - 180;
+function openCompass(f) {
+  const bg = document.createElement("div");
+  bg.className = "sheet-bg";
+  bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cpTitle" style="overflow-y:auto">
+    <h2 id="cpTitle">Back to ${esc(f.name || "this find")}</h2>
+    <div style="display:grid;place-items:center;padding:8px 0">
+      <svg id="cpDial" viewBox="-110 -110 220 220" width="240" height="240" style="max-width:100%">
+        <circle r="104" fill="var(--surface-2)" stroke="var(--line)" stroke-width="2"/>
+        <g id="cpRose">${COMPASS16.filter((_, i) => i % 4 === 0).map((n, i) => `<text x="0" y="-84" transform="rotate(${i * 90})" text-anchor="middle" font-size="16" font-weight="700" fill="${n === "N" ? "var(--danger)" : "var(--muted)"}">${n}</text>`).join("")}${Array.from({ length: 36 }, (_, i) => `<line y1="-104" y2="${i % 3 ? -98 : -94}" transform="rotate(${i * 10})" stroke="var(--faint)" stroke-width="2"/>`).join("")}</g>
+        <g id="cpArrow"><path d="M0 -72 L18 10 L0 0 L-18 10Z" fill="var(--shroom)"/><circle r="6" fill="var(--fg)"/></g>
+      </svg>
+    </div>
+    <div style="text-align:center"><div class="num" id="cpDist" style="font-family:var(--font-display);font-size:34px;font-weight:650">…</div><div class="hint num" id="cpDir"></div></div>
+    <div class="banner warn" id="cpAcc"><svg><use href="#i-warn"/></svg><div class="grow" id="cpAccText">Waiting for the compass…</div></div>
+    <details class="panel" id="cpCal"><summary style="cursor:pointer;font-weight:700">Calibrate the compass</summary>
+      <p>1. Move away from cars, metal and power lines. Hold the phone flat and draw a big figure 8 in the air three times, turning your wrist as you go.</p>
+      <p>2. For the most accurate result, tap Calibrate by walking. Then walk about 30 m in a straight line with the top of the phone pointing the way you're walking. GPS works out true north and corrects the compass.</p>
+      <div class="btn-row"><button class="btn small plant" type="button" id="cpWalk">Calibrate by walking</button><button class="btn small ghost" type="button" id="cpReset">Reset</button></div>
+      <p id="cpWalkMsg" class="num"></p>
+      <div class="field"><label for="cpOff">Manual correction</label><input type="range" id="cpOff" min="-40" max="40" step="1" value="${lsGet("compassOffset", 0)}"><span class="hint num" id="cpOffTxt"></span>
+        <span class="hint">Add your area's magnetic declination here (east is +, west is −) if you know it, or nudge it until the arrow matches a landmark.</span></div>
+    </details>
+    <div class="btn-row"><button class="btn primary" type="button" id="cpDone" style="flex:1">Done</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  let here = lastLoc ? { lat: lastLoc.lat, lng: lastLoc.lng, acc: lastLoc.acc } : null, heading = null, iosAcc = null;
+  const recent = [];   // last headings, to judge how steady the sensor is
+  let offset = +lsGet("compassOffset", 0);
+  let walk = null;
+  const offTxt = () => { $("#cpOffTxt", bg).textContent = `Correction ${offset > 0 ? "+" : ""}${offset}°`; };
+  offTxt();
+  function render() {
+    const target = { lat: f.lat, lng: f.lng };
+    if (here) {
+      const km = haversine(here, target), brg = bearingTo(here, target);
+      $("#cpDist", bg).textContent = km < 0.01 ? "You're there" : fmtDist(km);
+      $("#cpDir", bg).textContent = `Head ${compassName(brg)} (${Math.round(brg)}°)${here.acc ? ` · GPS ±${here.acc} m` : ""}`;
+      const h = heading == null ? 0 : heading;
+      $("#cpRose", bg).setAttribute("transform", `rotate(${-h})`);
+      $("#cpArrow", bg).setAttribute("transform", `rotate(${brg - h})`);
+    } else { $("#cpDist", bg).textContent = "Finding you…"; }
+    // Accuracy from the sensor if it reports one, otherwise from how much it jitters.
+    let msg, ok = false;
+    if (heading == null) msg = "No compass reading. Point the arrow using the direction above, with N on a paper map or the sun as a guide.";
+    else {
+      let spread = null;
+      if (recent.length >= 8) { const m = recent.reduce((s, x) => s + x, 0) / recent.length; spread = Math.sqrt(recent.reduce((s, x) => s + x * x, 0) / recent.length - m * m); }
+      const acc = iosAcc != null ? iosAcc : spread;
+      if (acc == null) msg = "Checking compass accuracy…";
+      else if (acc <= 10) { msg = "Compass accuracy is good."; ok = true; }
+      else if (acc <= 25) msg = "Compass accuracy is fair. Calibrate it for a better reading.";
+      else msg = "Compass accuracy is poor. Calibrate it below.";
+    }
+    $("#cpAcc", bg).className = "banner " + (ok ? "" : "warn");
+    $("#cpAcc", bg).style.background = ok ? "color-mix(in srgb, var(--plant) 15%, var(--surface))" : "";
+    $("#cpAccText", bg).textContent = msg;
+    if (!ok && heading != null && recent.length >= 8 && !$("#cpCal", bg).open && !bg._opened) { $("#cpCal", bg).open = true; bg._opened = true; }
+  }
+  let last = null;
+  function onOrient(e) {
+    let h = null;
+    if (e.webkitCompassHeading != null) { h = e.webkitCompassHeading; iosAcc = e.webkitCompassAccuracy >= 0 ? e.webkitCompassAccuracy : null; }
+    else if (e.absolute && e.alpha != null) h = 360 - e.alpha;
+    if (h == null) return;
+    // Screen rotation: the arrow is drawn for portrait.
+    const so = (screen.orientation && screen.orientation.angle) || 0;
+    h = (h + so + offset + 360) % 360;
+    heading = heading == null ? h : (heading + angDiff(h, heading) * 0.25 + 360) % 360;   // smooth
+    if (last != null) { recent.push(angDiff(h, last)); if (recent.length > 20) recent.shift(); }
+    last = h;
+    if (walk) walk.headings.push(h - offset);
+    render();
+  }
+  const evName = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+  const startSensors = async () => {
+    try { if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") await DeviceOrientationEvent.requestPermission(); } catch (e) {}
+    window.addEventListener(evName, onOrient);
+  };
+  startSensors();
+  let watch = null;
+  if (geoAvailable()) watch = navigator.geolocation.watchPosition(pos => {
+    here = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: Math.round(pos.coords.accuracy) };
+    lastLoc = { ...here, ts: Date.now() }; lsSet("lastLoc", lastLoc);
+    if (walk) {
+      if (!walk.start && pos.coords.accuracy <= 20) walk.start = here;
+      if (walk.start) {
+        const moved = haversine(walk.start, here) * 1000;
+        $("#cpWalkMsg", bg).textContent = `Walked ${Math.round(moved)} m of 30 m…`;
+        if (moved >= 30 && walk.headings.length > 5) {
+          const gpsBrg = bearingTo(walk.start, here);
+          // Average the compass headings as vectors.
+          const sx = walk.headings.reduce((s, x) => s + Math.sin(x * Math.PI / 180), 0), sy = walk.headings.reduce((s, x) => s + Math.cos(x * Math.PI / 180), 0);
+          const compassBrg = (Math.atan2(sx, sy) * 180 / Math.PI + 360) % 360;
+          offset = Math.round(angDiff(gpsBrg, compassBrg));
+          lsSet("compassOffset", offset); $("#cpOff", bg).value = offset; offTxt();
+          $("#cpWalkMsg", bg).textContent = `Calibrated. Correction set to ${offset > 0 ? "+" : ""}${offset}°.`;
+          walk = null; recent.length = 0;
+        }
+      }
+    }
+    render();
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
+  $("#cpWalk", bg).addEventListener("click", () => {
+    if (heading == null) { $("#cpWalkMsg", bg).textContent = "This phone isn't giving compass readings, so it can't be calibrated."; return; }
+    walk = { start: null, headings: [] };
+    $("#cpWalkMsg", bg).textContent = "Waiting for a good GPS fix, then start walking straight…";
+  });
+  $("#cpReset", bg).addEventListener("click", () => { offset = 0; lsSet("compassOffset", 0); $("#cpOff", bg).value = 0; offTxt(); walk = null; $("#cpWalkMsg", bg).textContent = "Correction reset."; });
+  $("#cpOff", bg).addEventListener("input", e => { offset = +e.target.value; lsSet("compassOffset", offset); offTxt(); });
+  holdScreen();
+  const close = () => { window.removeEventListener(evName, onOrient); if (watch != null) navigator.geolocation.clearWatch(watch); bg.remove(); };
+  $("#cpDone", bg).addEventListener("click", close);
+  render();
+}
+
+/* ============================================================
+   Sharing with a foraging buddy: a file you send any way you like.
+   ============================================================ */
+const slug = s => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "buddy";
+async function buildShare(list, blur) {
+  const media = {};
+  const out = [];
+  for (const f of list) {
+    const c = structuredClone(f);
+    delete c.sharedFrom; delete c.sample;
+    if (blur && c.lat != null) { c.lat = +c.lat.toFixed(2); c.lng = +c.lng.toFixed(2); c.acc = 1000; c.blurred = true; c.trailId = null; }
+    for (const p of [...(c.photos || []), ...(c.voice || [])]) {
+      const rec = await store.get("photos", p.key).catch(() => null);
+      if (rec) media[p.key] = typeof rec === "string" ? rec : await blobToDataURL(rec);
+    }
+    out.push(c);
+  }
+  return { app: "spore-and-leaf-share", version: 1, from: lsGet("buddyName", "") || "A friend", sharedAt: new Date().toISOString(), finds: out, photos: media };
+}
+async function sendShare(list, blur) {
+  if (!list.length) { toast("Nothing to share"); return; }
+  toast("Getting the file ready…");
+  const data = JSON.stringify(await buildShare(list, blur));
+  const name = `spore-and-leaf-from-${slug(lsGet("buddyName", "me"))}-${stamp()}.json`;
+  try {
+    const file = new File([data], name, { type: "application/json" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Spore & Leaf finds", text: `${list.length} ${list.length === 1 ? "find" : "finds"} from Spore & Leaf. Open the app, go to More, and tap Open a shared file.` }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  if (await saveFile(name, data, "application/json")) toast("Share file saved. Send it to your buddy.");
+}
+async function importShared(j) {
+  const from = String(j.from || "A friend").slice(0, 40);
+  let added = 0, updated = 0;
+  for (const raw of j.finds) {
+    const f = normalise(raw);
+    f.id = "sh-" + slug(from) + "-" + raw.id;
+    f.sharedFrom = from;
+    const tag = "from-" + slug(from);
+    if (!f.tags.includes(tag)) f.tags.push(tag);
+    const remap = p => { const key = "sh-" + p.key; const d = j.photos && j.photos[p.key]; return { ...p, key, _d: d }; };
+    f.photos = f.photos.map(remap); f.voice = (f.voice || []).map(remap);
+    for (const p of [...f.photos, ...f.voice]) { if (p._d) await store.put("photos", p._d.startsWith("data:image/svg") ? p._d : await dataURLToBlob(p._d), p.key); delete p._d; }
+    const exists = finds.some(x => x.id === f.id);
+    await store.put("finds", f); exists ? updated++ : added++;
+  }
+  await loadFinds();
+  toast(`${added} new and ${updated} updated ${added + updated === 1 ? "find" : "finds"} from ${from}`);
+}
+
+/* ============================================================
+   Voice: recorded notes (work offline) and dictation (needs signal on most phones).
+   ============================================================ */
+const canRecord = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+async function recordVoice(onState, maxMs = 120000) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const rec = new MediaRecorder(stream);
+  const chunks = [];
+  const t0 = Date.now();
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  const done = new Promise(res => { rec.onstop = () => { stream.getTracks().forEach(t => t.stop()); res({ blob: new Blob(chunks, { type: rec.mimeType || "audio/webm" }), secs: Math.round((Date.now() - t0) / 1000) }); }; });
+  rec.start();
+  const timer = setTimeout(() => rec.state === "recording" && rec.stop(), maxMs);
+  const tick = setInterval(() => onState && onState(Math.round((Date.now() - t0) / 1000)), 500);
+  return { stop: () => { clearTimeout(timer); clearInterval(tick); if (rec.state === "recording") rec.stop(); return done; } };
+}
+function dictateInto(textarea, btn) {
+  if (!SpeechRec) return;
+  const r = new SpeechRec();
+  r.lang = navigator.language || "en-CA"; r.interimResults = true; r.continuous = true;
+  const base = textarea.value ? textarea.value.replace(/\s*$/, " ") : "";
+  let finalText = "";
+  r.onresult = e => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finalText += t; else interim += t; }
+    textarea.value = base + finalText + interim;
+  };
+  r.onerror = e => { toast(e.error === "network" ? "Dictation needs signal on this phone. Record a voice note instead." : e.error === "not-allowed" ? "Microphone permission is off" : "Dictation stopped"); };
+  r.onend = () => { btn.textContent = "Dictate"; btn.setAttribute("aria-pressed", "false"); btn._r = null; };
+  r.start(); btn._r = r; btn.textContent = "Stop dictating"; btn.setAttribute("aria-pressed", "true");
+}
+async function voiceQuickLog(btn) {
+  if (btn._rec) { const { blob, secs } = await btn._rec.stop(); btn._rec = null; saveVoiceFind(blob, secs); return; }
+  try {
+    btn._rec = await recordVoice(s => { $("b", btn).textContent = `Recording ${s}s · tap to save`; });
+    $("b", btn).textContent = "Recording · tap to save";
+  } catch (e) { toast("Couldn't use the microphone. Check its permission for this site."); }
+}
+async function saveVoiceFind(blob, secs) {
+  toast("Saving…");
+  let loc = null; try { loc = await getPosition(8000); } catch (e) {}
+  const key = "v-" + uid(), nowISO = new Date().toISOString();
+  await store.put("photos", blob, key);
+  const f = normalise({ id: uid(), type: lsGet("lastType", "mushroom"), name: "", photos: [], voice: [{ key, secs, at: nowISO }],
+    lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, acc: loc ? loc.acc : null, locSource: loc ? "gps" : null, elev: loc ? loc.alt : null,
+    foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, moon: moonPhase(nowISO),
+    width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "", weather: [], rainRecent: "", temp: null, weatherNote: "" });
+  await store.put("finds", f);
+  if (finds.some(x => x.sample)) await removeExamples();
+  await loadFinds();
+  toast(loc ? "Voice note saved with location" : "Voice note saved. No location yet.");
+  renderLog();
+}
+async function voicePlayersHTML(list) {
+  if (!list || !list.length) return "";
+  const parts = [];
+  for (const v of list) {
+    const rec = await store.get("photos", v.key).catch(() => null);
+    if (!rec) continue;
+    parts.push(`<div class="switch"><audio controls preload="metadata" src="${URL.createObjectURL(rec)}" style="width:100%;min-width:0"></audio><span class="hint num" style="flex:none">${v.secs || "?"}s</span></div>`);
+  }
+  return parts.join("");
+}
+
+
+/* ============================================================
+   Sunset countdown, worked out on the phone (NOAA formula).
+   ============================================================ */
+function sunTimes(date, lat, lng) {
+  const rad = Math.PI / 180;
+  const d = new Date(date); d.setHours(12, 0, 0, 0);
+  const n = Math.floor((d - new Date(Date.UTC(2000, 0, 1, 12))) / DAY) + 0.0008;   // days since J2000
+  const Js = n - lng / 360;
+  const M = (357.5291 + 0.98560028 * Js) % 360;
+  const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  const lam = (M + C + 180 + 102.9372) % 360;
+  const Jt = 2451545 + Js + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * lam * rad);
+  const dec = Math.asin(Math.sin(lam * rad) * Math.sin(23.4397 * rad));
+  const cosW = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec)) / (Math.cos(lat * rad) * Math.cos(dec));
+  if (cosW > 1) return { polar: "night" };
+  if (cosW < -1) return { polar: "day" };
+  const w = Math.acos(cosW) / rad;
+  const toDate = j => new Date((j - 2440587.5) * DAY);
+  return { rise: toDate(Jt - w / 360), set: toDate(Jt + w / 360) };
+}
+function sunsetInfo() {
+  if (!lastLoc) return null;
+  const now = new Date();
+  const t = sunTimes(now, lastLoc.lat, lastLoc.lng);
+  if (t.polar) return { text: t.polar === "day" ? "The sun doesn't set here today" : "The sun doesn't rise here today", level: "ok" };
+  const mins = Math.round((t.set - now) / 60000);
+  const at = t.set.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (mins < 0) {
+    const tm = sunTimes(new Date(now.getTime() + DAY), lastLoc.lat, lastLoc.lng);
+    return { text: `The sun set at ${at}. Sunrise is at ${tm.rise ? tm.rise.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "—"}`, level: "dark", mins };
+  }
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return { text: `Sunset in ${h ? h + " h " : ""}${m} min, at ${at}`, level: mins <= 45 ? "soon" : mins <= 90 ? "warn" : "ok", mins };
+}
+function sunsetHTML() {
+  const s = sunsetInfo();
+  if (!s) return "";
+  const col = s.level === "soon" || s.level === "dark" ? "var(--danger)" : s.level === "warn" ? "var(--warn-fg)" : "var(--muted)";
+  return `<div class="context-note num" style="display:flex;gap:8px;align-items:center;color:${col}"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 18h16M7 18a5 5 0 0 1 10 0M12 7V4M5.6 10.6 4 9M18.4 10.6 20 9"/></g></svg><span>${esc(s.text)}${s.level === "soon" ? ". Time to head back." : ""}</span></div>`;
+}
+let sunsetWarned = false;
+setInterval(() => {
+  const s = sunsetInfo();
+  if (!s || s.mins == null) return;
+  if (s.mins <= 45 && s.mins > 0 && !sunsetWarned && (activeTrail || document.visibilityState === "visible")) {
+    sunsetWarned = true;
+    toast(`Sunset in ${s.mins} min. Time to head back.`);
+    if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") { try { new Notification("Sunset soon", { body: `Sunset in ${s.mins} minutes. Time to head back.`, icon: "icon.svg" }); } catch (e) {} }
+  }
+  const el = $("#sunLine"); if (el) el.innerHTML = sunsetHTML();
+}, 60000);
+
+/* ============================================================
+   PIN lock. Hides the app behind a PIN. The log itself isn't encrypted.
+   ============================================================ */
+async function sha(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+const pinSet = () => !!lsGet("pinHash", null);
+let unlocked = false, hiddenAt = 0;
+function showLock() {
+  if (!pinSet() || $("#lockScreen")) return;
+  unlocked = false;
+  const el = document.createElement("div");
+  el.id = "lockScreen";
+  el.style.cssText = "position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px max(16px, env(safe-area-inset-left, 0px))";
+  el.innerHTML = `<svg width="56" height="56" viewBox="0 0 32 32" aria-hidden="true"><path fill="#e9a75e" d="M16 4C9 4 4 8.8 4 13.8c0 1.2.9 2.2 2.1 2.2h19.8c1.2 0 2.1-1 2.1-2.2C28 8.8 23 4 16 4Z"/><path fill="#ede6d8" d="M13 17h6l.8 9a2 2 0 0 1-2 2.2h-3.6a2 2 0 0 1-2-2.2L13 17Z"/></svg>
+    <h2 style="font-size:24px">Enter your PIN</h2>
+    <div id="pinDots" style="display:flex;gap:12px" aria-hidden="true"></div>
+    <input id="pinIn" type="password" inputmode="numeric" autocomplete="off" maxlength="8" aria-label="PIN" style="max-width:220px;text-align:center;font-size:24px;letter-spacing:.4em">
+    <p class="hint" id="pinMsg" style="min-height:20px;margin:0"></p>
+    <div style="display:grid;grid-template-columns:repeat(3,72px);gap:12px">${[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map(k => k === "" ? "<span></span>" : `<button type="button" class="btn" data-k="${k}" style="min-height:64px;font-size:22px;border-radius:50%">${k}</button>`).join("")}</div>
+    <button type="button" class="btn small ghost" id="pinForgot">Forgot PIN</button>`;
+  document.body.appendChild(el);
+  const inp = $("#pinIn", el);
+  let fails = 0;
+  const check = async () => {
+    const v = inp.value;
+    if (v.length < 4) return;
+    if (await sha(lsGet("pinSalt", "") + v) === lsGet("pinHash", "")) { unlocked = true; el.remove(); return; }
+    if (v.length >= lsGet("pinLen", 4)) {
+      fails++; inp.value = "";
+      $("#pinMsg", el).textContent = fails >= 5 ? "Too many tries. Wait 30 seconds." : "That PIN isn't right.";
+      if (fails >= 5) { $$("button", el).forEach(b => b.disabled = true); setTimeout(() => { $$("button", el).forEach(b => b.disabled = false); fails = 0; $("#pinMsg", el).textContent = ""; }, 30000); }
+    }
+  };
+  inp.addEventListener("input", check);
+  el.addEventListener("click", e => {
+    const b = e.target.closest("[data-k]"); if (!b) return;
+    if (b.dataset.k === "⌫") inp.value = inp.value.slice(0, -1); else inp.value += b.dataset.k;
+    check();
+  });
+  $("#pinForgot", el).addEventListener("click", () => {
+    $("#pinMsg", el).innerHTML = `The PIN can't be recovered. To start over, type ERASE to delete everything in the app on this phone. <input id="eraseIn" type="text" style="margin-top:8px" aria-label="Type ERASE"><button type="button" class="btn small danger" id="eraseGo" style="margin-top:8px">Erase and start over</button>`;
+    $("#eraseGo", el).addEventListener("click", async () => {
+      if ($("#eraseIn", el).value.trim() !== "ERASE") { toast("Type ERASE to confirm"); return; }
+      for (const s of ["finds", "photos", "trails", "kv", "tiles"]) await store.clear(s).catch(() => {});
+      try { Object.keys(localStorage).filter(k => k.startsWith("sl:")).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+      location.reload();
+    });
+  });
+  setTimeout(() => inp.focus(), 50);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") hiddenAt = Date.now();
+  else if (pinSet() && Date.now() - hiddenAt > lsGet("pinAfter", 5) * 60000) showLock();
+});
+async function setPin(pin) {
+  const salt = uid();
+  lsSet("pinSalt", salt); lsSet("pinHash", await sha(salt + pin)); lsSet("pinLen", pin.length);
+}
+
+/* ============================================================
+   iNaturalist: upload finds so experts can confirm the ID,
+   then bring the community ID back into the log.
+   ============================================================ */
+const INAT = "https://www.inaturalist.org", INAT_API = "https://api.inaturalist.org/v1";
+const inat = {
+  get clientId() { return lsGet("inatClient", ""); },
+  get access() { return lsGet("inatAccess", ""); },
+  get jwt() { const j = lsGet("inatJwt", null); return j && Date.now() - j.ts < 20 * 3600000 ? j.token : null; },
+  get user() { return lsGet("inatUser", null); },
+  connected() { return !!(this.access || lsGet("inatJwt", null)); }
+};
+const redirectURI = () => location.origin + location.pathname;
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function inatSignIn() {
+  if (!inat.clientId) { toast("Add your iNaturalist app ID first"); return; }
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  lsSet("inatVerifier", verifier);
+  location.href = `${INAT}/oauth/authorize?client_id=${encodeURIComponent(inat.clientId)}&redirect_uri=${encodeURIComponent(redirectURI())}&response_type=code&code_challenge=${challenge}&code_challenge_method=S256`;
+}
+async function inatFinishSignIn() {
+  const q = new URLSearchParams(location.search);
+  const code = q.get("code");
+  if (!code) return;
+  history.replaceState(null, "", location.pathname + "#more");
+  try {
+    const body = new URLSearchParams({ client_id: inat.clientId, code, redirect_uri: redirectURI(), grant_type: "authorization_code", code_verifier: lsGet("inatVerifier", "") });
+    const r = await fetch(`${INAT}/oauth/token`, { method: "POST", body });
+    if (!r.ok) throw new Error("token " + r.status);
+    const j = await r.json();
+    lsSet("inatAccess", j.access_token);
+    await inatRefreshJwt();
+    await inatWhoAmI();
+    toast("Connected to iNaturalist");
+  } catch (e) {
+    toast("iNaturalist sign-in didn't finish. You can paste an API token instead.");
+  }
+}
+async function inatRefreshJwt() {
+  if (!inat.access) throw new Error("not signed in");
+  const r = await fetch(`${INAT}/users/api_token`, { headers: { Authorization: "Bearer " + inat.access } });
+  if (!r.ok) throw new Error("api_token " + r.status);
+  const j = await r.json();
+  lsSet("inatJwt", { token: j.api_token, ts: Date.now() });
+  return j.api_token;
+}
+async function inatToken() {
+  if (inat.jwt) return inat.jwt;
+  if (inat.access) return inatRefreshJwt();
+  throw new Error("token_expired");
+}
+async function inatFetch(path, opts = {}) {
+  const tok = await inatToken();
+  const r = await fetch(INAT_API + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: tok } });
+  if (r.status === 401) { lsSet("inatJwt", null); throw new Error("token_expired"); }
+  if (!r.ok) throw new Error("inat " + r.status);
+  return r.json();
+}
+async function inatWhoAmI() {
+  const j = await inatFetch("/users/me");
+  const u = j.results && j.results[0];
+  if (u) lsSet("inatUser", { login: u.login, id: u.id });
+  return u;
+}
+let inatBusy = false;
+async function inatUpload(f) {
+  const geopriv = lsGet("inatGeo", "obscured");
+  const notes = [f.description, f.colourNote && "Colour: " + f.colourNote, (f.colours || []).length && "Colours: " + f.colours.join(", "),
+    f.spore && "Spore print: " + f.spore, f.gills && "Underside: " + f.gills, f.smell.length && "Smell: " + f.smell.join(", "), f.texture.length && "Texture: " + f.texture.join(", "),
+    f.bruise && "Bruising: " + f.bruise + (f.bruiseNote ? " (" + f.bruiseNote + ")" : ""), f.substrate && "Growing on: " + f.substrate, f.habitat.length && "Habitat: " + f.habitat.join(", "), f.trees && "Nearby: " + f.trees,
+    f.width != null && `Cap/width ${(+f.width).toFixed(1)} cm`, f.stem != null && `Stem ${(+f.stem).toFixed(1)} cm`, "Logged with Spore & Leaf."].filter(Boolean).join("\n");
+  const obs = await inatFetch("/observations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ observation: {
+    species_guess: f.name || (f.idApp && f.idApp.result) || "", observed_on_string: f.foundAt, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    description: notes, latitude: f.lat, longitude: f.lng, positional_accuracy: f.acc || undefined, geoprivacy: geopriv, owners_identification_from_vision: false
+  } }) });
+  const obsId = obs.id || (obs.results && obs.results[0] && obs.results[0].id);
+  if (!obsId) throw new Error("no id");
+  for (const ph of f.photos) {
+    const rec = await store.get("photos", ph.key).catch(() => null);
+    if (!rec || typeof rec === "string") continue;
+    const fd = new FormData();
+    fd.append("observation_photo[observation_id]", obsId);
+    fd.append("file", rec, "photo.jpg");
+    await inatFetch("/observation_photos", { method: "POST", body: fd });
+  }
+  return obsId;
+}
+async function inatSyncOne(f) {
+  const j = await inatFetch(`/observations/${f.inat.id}`);
+  const o = j.results && j.results[0];
+  if (!o) return;
+  const t = o.community_taxon || o.taxon;
+  const ids = (o.identifications || []).filter(i => i.current);
+  const agree = t ? ids.filter(i => i.taxon && (i.taxon.id === t.id || (i.taxon.ancestor_ids || []).includes(t.id))).length : 0;
+  f.inat = { ...f.inat, quality: o.quality_grade, taxon: t ? t.name : "", common: t ? (t.preferred_common_name || "") : "", rank: t ? t.rank : "", idCount: ids.length, agree, syncedAt: Date.now(), url: `${INAT}/observations/${f.inat.id}` };
+  await store.put("finds", f);
+}
+async function inatProcess() {
+  if (inatBusy || !navigator.onLine || !inat.connected()) return;
+  inatBusy = true;
+  let up = 0, changed = 0, expired = false;
+  try {
+    for (const f of finds.filter(x => x.inatQueued && !(x.inat && x.inat.id) && x.lat != null && !x.sample && !x.sharedFrom)) {
+      try { const id = await inatUpload(f); f.inat = { id, url: `${INAT}/observations/${id}`, uploadedAt: Date.now(), quality: "needs_id" }; delete f.inatQueued; await store.put("finds", f); up++; }
+      catch (e) { if (e.message === "token_expired") { expired = true; break; } }
+    }
+    if (!expired) for (const f of finds.filter(x => x.inat && x.inat.id && (!x.inat.syncedAt || Date.now() - x.inat.syncedAt > 3 * 3600000))) {
+      const before = f.inat.quality + f.inat.taxon;
+      try { await inatSyncOne(f); if (f.inat.quality + f.inat.taxon !== before) changed++; } catch (e) { if (e.message === "token_expired") { expired = true; break; } }
+    }
+  } finally { inatBusy = false; }
+  if (up) toast(`Uploaded ${up} ${up === 1 ? "find" : "finds"} to iNaturalist`);
+  if (changed) toast(`${changed} iNaturalist ${changed === 1 ? "ID has" : "IDs have"} changed`);
+  if (expired) lsSet("inatExpired", true); else lsSet("inatExpired", false);
+  if (up || changed) { await loadFinds(); if ((location.hash || "#log").startsWith("#find-") || location.hash === "#log" || !location.hash) route(); }
+}
+window.addEventListener("online", () => inatProcess());
+const inatQualityLabel = q => ({ research: "Research grade: confirmed by the community", needs_id: "Needs ID: waiting for experts", casual: "Casual: missing details, so experts may not review it" }[q] || "Uploaded");
 
 /* ============================================================
    Trails: record the walking route while foraging.
@@ -1286,12 +1930,13 @@ async function renderMap() {
   main.innerHTML = `<div class="wrap view">
     <div class="legend" style="justify-content:space-between"><span style="gap:14px;display:inline-flex;flex-wrap:wrap">
       <button type="button" class="chip" data-k="mushroom" aria-pressed="true"><span class="dot mushroom"></span>Mushrooms</button>
-      <button type="button" class="chip" data-k="plant" aria-pressed="true"><span class="dot plant"></span>Plants</button></span></div>
+      <button type="button" class="chip" data-k="plant" aria-pressed="true"><span class="dot plant"></span>Plants</button>
+      <button type="button" class="chip" id="heatBtn" aria-pressed="${lsGet("heat", false)}">Hotspots</button></span></div>
     <div class="map-full" id="bigMap"></div>
     <div class="panel" id="trailPanel"></div>
     <div class="panel">
       <h3>Offline map</h3>
-      <p id="offMsg">While you have signal, move the map to the area you forage in, then save it. It will load with no signal later. <span class="num">${tileCount}</span> map tiles are saved on this phone.</p>
+      <p id="offMsg">While you have signal, move the map to the area you forage in, pick Street or Topo (and Hiking trails if you want them) with the layers button, then save it. It will load with no signal later. <span class="num">${tileCount}</span> map tiles are saved on this phone.</p>
       <div class="progress" id="prog" hidden><i></i></div>
       <div class="btn-row"><button class="btn plant" type="button" id="dlBtn"><svg><use href="#i-down"/></svg><span>Save this area</span></button><button class="btn ghost" type="button" id="meBtn"><svg><use href="#i-gps"/></svg>Find me</button></div>
     </div>
@@ -1310,9 +1955,20 @@ async function renderMap() {
     const s = document.createElement("div"); s.style.cssText = "color:var(--muted);font-size:13px"; s.textContent = fmtDate(f.foundAt);
     pop.append(a, s); mk.bindPopup(pop);
   }
-  $$(".legend .chip").forEach(b => b.addEventListener("click", () => {
+  // Hotspots: a heatmap of where finds cluster.
+  let heat = null;
+  const drawHeat = () => {
+    if (heat) { heat.remove(); heat = null; }
+    if (!lsGet("heat", false) || !L.heatLayer) return;
+    const hp = finds.filter(f => f.lat != null && shown[f.type]).map(f => [f.lat, f.lng, 1]);
+    heat = L.heatLayer(hp, { radius: 28, blur: 22, maxZoom: 15, minOpacity: 0.3, gradient: { 0.2: "#1f4f45", 0.45: "#2fa58a", 0.7: "#9ed9b8", 1: "#ede6d8" } }).addTo(m);
+  };
+  drawHeat();
+  $("#heatBtn").addEventListener("click", e => { e.stopPropagation(); const on = !lsGet("heat", false); lsSet("heat", on); $("#heatBtn").setAttribute("aria-pressed", on); drawHeat(); });
+  $$(".legend .chip[data-k]").forEach(b => b.addEventListener("click", () => {
     const k = b.dataset.k; shown[k] = !shown[k]; b.setAttribute("aria-pressed", shown[k]);
     shown[k] ? layers[k].addTo(m) : layers[k].remove();
+    drawHeat();
   }));
   // Trails
   const css = getComputedStyle(document.documentElement);
@@ -1329,7 +1985,7 @@ async function renderMap() {
     const tp = $("#trailPanel"); if (!tp) return;
     if (activeTrail) {
       const km = trailKm(activeTrail.points);
-      tp.innerHTML = `<h3>Recording a trail</h3><p class="num"><span class="due">${esc(fmtDist(km))}</span> walked · ${esc(fmtDur(Date.now() - activeTrail.start))} · ${activeTrail.points.length} points</p><p>Keep this page open with the screen on. A web page can't track you while the phone is locked. The Android app will.</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
+      tp.innerHTML = `<h3>Recording a trail</h3><p class="num"><span class="due">${esc(fmtDist(km))}</span> walked · ${esc(fmtDur(Date.now() - activeTrail.start))} · ${activeTrail.points.length} points</p>${sunsetHTML()}<p>Keep this page open with the screen on. A web page can't track you while the phone is locked. The Android app will.</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
       $("#trailStop").addEventListener("click", async () => { const ok = await stopTrail(); toast(ok ? "Trail saved" : "Trail too short to save"); renderMap(); });
     } else {
       tp.innerHTML = `<h3>Trails</h3><p>Record the route you walk. Finds you log while recording are linked to the trail.</p>
@@ -1366,9 +2022,11 @@ async function renderMap() {
     if (downloading) { downloading = false; return; }
     const z = m.getZoom();
     if (z < 10) { toast("Zoom in closer first, to a few kilometres across"); return; }
-    let zMax = Math.min(17, z + 3), list = tilesFor(m.getBounds(), Math.max(8, z - 2), zMax);
-    while (list.length > MAX_TILES && zMax > z) { zMax--; list = tilesFor(m.getBounds(), Math.max(8, z - 2), zMax); }
-    if (list.length > MAX_TILES) { toast("That area is too big. Zoom in a little."); return; }
+    const ids = m._layerIds();
+    const build = zMax => ids.flatMap(id => tilesFor(m.getBounds(), Math.max(8, z - 2), Math.min(zMax, TILE_LAYERS[id].max)).map(t => [id, ...t]));
+    let zMax = Math.min(17, z + 3), list = build(zMax);
+    while (list.length > MAX_TILES * ids.length && zMax > z) { zMax--; list = build(zMax); }
+    if (list.length > MAX_TILES * ids.length) { toast("That area is too big. Zoom in a little."); return; }
     const prog = $("#prog"), bar = prog.firstElementChild;
     prog.hidden = false; label.textContent = "Stop";
     const { done, failed } = await downloadTiles(list, d => { bar.style.width = (d / list.length * 100) + "%"; $("#offMsg").textContent = `Saving map tiles: ${d} of ${list.length}`; });
@@ -1376,15 +2034,181 @@ async function renderMap() {
     const total = await store.count("tiles").catch(() => 0);
     $("#offMsg").textContent = done && failed === done
       ? "The map couldn't be downloaded. Check you have signal and try again."
-      : `Saved this area down to street level. ${total} map tiles are now on this phone${failed ? `, and ${failed} couldn't be downloaded` : ""}.`;
+      : `Saved this area (${ids.map(id => TILE_LAYERS[id].name.toLowerCase()).join(" and ")} map) down to street level. ${total} map tiles are now on this phone${failed ? `, and ${failed} couldn't be downloaded` : ""}.`;
   });
+}
+
+
+/* ============================================================
+   In season: edibles likely to be found in an area in a given month.
+   Bundled months work offline; iNaturalist records refine them online.
+   ============================================================ */
+let edView = { month: new Date().getMonth() + 1, kind: lsGet("edKind", "all"), q: "", place: lsGet("edPlace", null) };   // place: {name, lat, lng, placeId?}
+const MONTHS3 = MONTHS.map(m => m.slice(0, 3));
+function regionFor(lng) { return lng != null && lng < -30 ? "na" : "eu"; }
+async function inatPublic(path) {
+  const r = await fetch(INAT_API + path);
+  if (!r.ok) throw new Error("inat " + r.status);
+  return r.json();
+}
+async function taxonIds(list) {
+  const cache = lsGet("taxa", {});
+  for (const e of list) {
+    if (cache[e.latin] !== undefined) continue;
+    try {
+      const j = await inatPublic(`/taxa?q=${encodeURIComponent(e.latin)}&is_active=true&per_page=5`);
+      const hit = (j.results || []).find(t => t.name.toLowerCase() === e.latin.toLowerCase()) || (j.results || [])[0];
+      cache[e.latin] = hit ? hit.id : null;
+      lsSet("taxa", cache);
+    } catch (err) { break; }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return cache;
+}
+async function areaCounts(place, onProgress) {
+  const key = place.placeId ? "p" + place.placeId : `${place.lat.toFixed(1)},${place.lng.toFixed(1)}`;
+  const all = lsGet("edCounts", {});
+  if (all[key] && Date.now() - all[key].ts < 14 * DAY) return all[key].counts;
+  onProgress && onProgress("Looking up species on iNaturalist…");
+  const ids = await taxonIds(EDIBLES);
+  const byId = {};
+  EDIBLES.forEach(e => { if (ids[e.latin]) byId[ids[e.latin]] = e.id; });
+  const idList = Object.keys(byId);
+  if (!idList.length) throw new Error("no taxa");
+  const where = place.placeId ? `place_id=${place.placeId}` : `lat=${place.lat.toFixed(3)}&lng=${place.lng.toFixed(3)}&radius=60`;
+  const counts = {};
+  EDIBLES.forEach(e => counts[e.id] = Array(12).fill(0));
+  for (let m = 1; m <= 12; m++) {
+    onProgress && onProgress(`Checking records for ${MONTHS[m - 1]}…`);
+    const j = await inatPublic(`/observations/species_counts?${where}&month=${m}&quality_grade=research&per_page=200&taxon_id=${idList.join(",")}`);
+    for (const r of j.results || []) {
+      // species_counts reports species. Roll each up to the entry it belongs to, genus entries included.
+      const t = r.taxon || {};
+      const anc = [t.id, ...(t.ancestor_ids || [])];
+      for (const tid of anc) if (byId[tid]) { counts[byId[tid]][m - 1] += r.count; break; }
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  all[key] = { ts: Date.now(), counts };
+  // Keep the cache small.
+  const keys = Object.keys(all).sort((x, y) => all[y].ts - all[x].ts).slice(0, 8);
+  lsSet("edCounts", Object.fromEntries(keys.map(k => [k, all[k]])));
+  return counts;
+}
+let edWeather = lsGet("edWeather", null);
+async function areaWeather(place) {
+  if (edWeather && edWeather.key === `${place.lat.toFixed(1)},${place.lng.toFixed(1)}` && Date.now() - edWeather.ts < 3 * 3600000) return edWeather;
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${place.lat.toFixed(3)}&longitude=${place.lng.toFixed(3)}&daily=precipitation_sum,temperature_2m_mean&past_days=7&forecast_days=1&timezone=auto`);
+  if (!r.ok) throw new Error("weather");
+  const j = await r.json();
+  const rain = j.daily.precipitation_sum.slice(0, 7).reduce((s, x) => s + (x || 0), 0);
+  const t = j.daily.temperature_2m_mean.slice(0, 7).filter(x => x != null);
+  edWeather = { key: `${place.lat.toFixed(1)},${place.lng.toFixed(1)}`, ts: Date.now(), rain: +rain.toFixed(1), temp: Math.round(t.reduce((s, x) => s + x, 0) / (t.length || 1)) };
+  lsSet("edWeather", edWeather);
+  return edWeather;
+}
+function edPlace() {
+  if (edView.place) return edView.place;
+  if (lastLoc) return { name: "Near you", lat: lastLoc.lat, lng: lastLoc.lng, near: true };
+  return null;
+}
+async function renderEdibles() {
+  setChrome({ title: "In season", tab: "edibles" });
+  const place = edPlace();
+  main.innerHTML = `<div class="wrap view">
+    <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>A guide to what to look for, not permission to eat.</b> Every one of these has lookalikes, some deadly. Have each find checked in person by an expert before eating.</div></div>
+    <div class="panel" style="gap:12px">
+      <div class="switch" style="align-items:flex-start"><span style="min-width:0"><span class="eyebrow">Area</span><br><b id="edPlaceName" style="font-size:18px">${esc(place ? place.name : "Choose an area")}</b></span>
+        ${edView.place ? `<button class="btn small ghost" type="button" id="edNear"><svg><use href="#i-gps"/></svg>Near me</button>` : ""}</div>
+      <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edSearch" placeholder="Search another area, e.g. Algonquin Park" autocomplete="off" aria-label="Search for an area"></div>
+      <div id="edResults" class="settings-list"></div>
+    </div>
+    <div class="chips" id="edMonths" role="group" aria-label="Month" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${MONTHS3.map((m, i) => `<button type="button" class="chip" data-m="${i + 1}" aria-pressed="${edView.month === i + 1}" style="flex:none">${m}</button>`).join("")}</div>
+    <div class="seg" role="group" aria-label="Show" id="edKind">${[["all", "All"], ["mushroom", "Mushrooms"], ["plant", "Plants"]].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${edView.kind === v}">${l}</button>`).join("")}</div>
+    <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edFilter" placeholder="Filter species" value="${esc(edView.q)}" autocomplete="off" aria-label="Filter species"></div>
+    <div class="context-note" id="edStatus"></div>
+    <div class="list" id="edList" style="grid-template-columns:1fr"></div>
+  </div>`;
+  let counts = null, wx = null;
+  const draw = () => {
+    const region = regionFor(place ? place.lng : null);
+    const m = edView.month, nowM = new Date().getMonth() + 1;
+    let list = EDIBLES.filter(e => (edView.kind === "all" || e.kind === edView.kind) && (!edView.q || (e.name + " " + e.latin).toLowerCase().includes(edView.q.toLowerCase())));
+    const score = e => {
+      if (counts) { const c = counts[e.id] || []; const tot = c.reduce((s, x) => s + x, 0); return tot ? c[m - 1] / Math.max(...c) + (c[m - 1] ? 1 : 0) : -1; }
+      return (e[region] || []).includes(m) ? 1 : (e[region] || []).length ? 0 : -1;
+    };
+    list = list.map(e => ({ e, s: score(e) })).sort((x, y) => y.s - x.s || x.e.name.localeCompare(y.e.name));
+    const inS = list.filter(x => x.s > 0.15 || (!counts && x.s === 1));
+    const rest = list.filter(x => !inS.includes(x));
+    const favoured = e => e.wx && wx && m === nowM && wx.rain >= 10 && wx.temp >= e.wx[0] && wx.temp <= e.wx[1];
+    const card = ({ e, s }) => {
+      const c = counts && counts[e.id];
+      const mx = c ? Math.max(1, ...c) : 1;
+      const bars = MONTHS3.map((mm, i) => {
+        const v = c ? c[i] / mx : ((e[region] || []).includes(i + 1) ? 1 : 0);
+        const col = e.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
+        return `<span title="${mm}${c ? ": " + c[i] + " records" : ""}" style="display:block;height:22px;border-radius:3px;background:${v ? `color-mix(in srgb, ${col} ${Math.round(30 + 70 * v)}%, var(--surface))` : "var(--surface-2)"};${i + 1 === m ? "outline:2px solid var(--fg);outline-offset:1px" : ""}"></span>`;
+      }).join("");
+      const tot = c ? c.reduce((x, y) => x + y, 0) : null;
+      return `<div class="panel" style="gap:8px">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><b style="font-family:var(--font-display);font-size:19px">${esc(e.name)}</b><div class="hint"><i>${esc(e.latin)}</i> · <span class="dot ${e.kind}"></span> ${e.kind === "plant" ? "Plant" : "Mushroom"}</div></div>
+          ${favoured(e) ? `<span class="edib edible" style="flex:none">Weather favours it</span>` : ""}</div>
+        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px">${bars}</div>
+        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map(x => `<span>${x[0]}</span>`).join("")}</div>
+        <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} here in ${MONTHS[m - 1]}, ${tot} all year.` : "No confirmed iNaturalist records in this area.") : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
+        <p style="margin:0">${esc(e.where)}</p>
+        <p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p>
+      </div>`;
+    };
+    $("#edList").innerHTML = (inS.length ? `<h3 style="font-size:18px">Likely in ${MONTHS[m - 1]}</h3>` + inS.map(card).join("") : `<p class="hint">Nothing on this list is usually found here in ${MONTHS[m - 1]}.</p>`)
+      + (rest.length ? `<details class="panel"><summary style="cursor:pointer;font-weight:700">Not usually found in ${MONTHS[m - 1]} (${rest.length})</summary><div class="settings-list" style="margin-top:10px">${rest.map(card).join("")}</div></details>` : "");
+    let st = "";
+    if (wx && m === nowM) st = `Last 7 days here: ${wx.rain} mm of rain, average ${wx.temp} °C. "Weather favours it" means rain and temperature suit that mushroom right now. `;
+    st += counts ? "Months are from confirmed iNaturalist records within about 60 km." : `Months are a general guide for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.${navigator.onLine && place ? "" : " Connect to see local records from iNaturalist."}`;
+    $("#edStatus").textContent = st;
+  };
+  draw();
+  $$("#edMonths .chip").forEach(b => b.addEventListener("click", () => { edView.month = +b.dataset.m; $$("#edMonths .chip").forEach(x => x.setAttribute("aria-pressed", x === b)); draw(); }));
+  $$("#edKind button").forEach(b => b.addEventListener("click", () => { edView.kind = b.dataset.v; lsSet("edKind", edView.kind); $$("#edKind button").forEach(x => x.setAttribute("aria-pressed", x === b)); draw(); }));
+  $("#edFilter").addEventListener("input", e => { edView.q = e.target.value.trim(); draw(); });
+  const cur = $(`#edMonths .chip[data-m="${edView.month}"]`); if (cur) cur.scrollIntoView({ block: "nearest", inline: "center" });
+  const nearBtn = $("#edNear");
+  if (nearBtn) nearBtn.addEventListener("click", async () => { edView.place = null; lsSet("edPlace", null); try { await getPosition(); } catch (e) {} renderEdibles(); });
+  // Area search, through iNaturalist places.
+  let t = null;
+  $("#edSearch").addEventListener("input", e => {
+    clearTimeout(t);
+    const q = e.target.value.trim();
+    if (q.length < 3) { $("#edResults").innerHTML = ""; return; }
+    t = setTimeout(async () => {
+      if (!navigator.onLine) { $("#edResults").innerHTML = `<p class="hint">Searching areas needs signal.</p>`; return; }
+      try {
+        const j = await inatPublic(`/places/autocomplete?q=${encodeURIComponent(q)}&per_page=6`);
+        const res = (j.results || []).filter(r => r.location);
+        $("#edResults").innerHTML = res.length ? res.map((r, i) => `<button type="button" class="btn small ghost" data-i="${i}" style="justify-content:flex-start;text-align:left">${esc(r.display_name || r.name)}</button>`).join("") : `<p class="hint">No areas found.</p>`;
+        $$("#edResults [data-i]").forEach(b => b.addEventListener("click", () => {
+          const r = res[+b.dataset.i], [la, ln] = r.location.split(",").map(Number);
+          edView.place = { name: r.display_name || r.name, lat: la, lng: ln, placeId: r.id };
+          lsSet("edPlace", edView.place); renderEdibles();
+        }));
+      } catch (err) { $("#edResults").innerHTML = `<p class="hint">Couldn't reach iNaturalist.</p>`; }
+    }, 350);
+  });
+  if (!place && geoAvailable()) { getPosition().then(() => { if (location.hash === "#edibles") renderEdibles(); }).catch(() => {}); }
+  if (place && navigator.onLine) {
+    areaWeather(place).then(w => { wx = w; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
+    areaCounts(place, msg => { const s = $("#edStatus"); if (s) s.textContent = msg; })
+      .then(c => { counts = c; if (document.body.contains($("#edList"))) draw(); })
+      .catch(() => { const s = $("#edStatus"); if (s) { draw(); s.textContent += " Couldn't load local records from iNaturalist."; } });
+  }
 }
 
 /* ============================================================
    Season: revisit list and season stats
    ============================================================ */
 function renderSeason() {
-  setChrome({ title: "Season", tab: "season" });
+  setChrome({ title: "Stats", tab: "season" });
   const now = new Date(), thisMonth = now.getMonth();
   const rv = finds.filter(f => f.revisit).map(f => ({ f, nv: nextVisit(f) })).sort((a, b) => a.nv.days - b.nv.days);
   const per = Array.from({ length: 12 }, () => ({ mushroom: 0, plant: 0 }));
@@ -1398,6 +2222,8 @@ function renderSeason() {
   const busiest = per.map((p, i) => [i, p.mushroom + p.plant]).sort((a, b) => b[1] - a[1])[0];
 
   main.innerHTML = `<div class="wrap view">
+    <div class="section" id="fruitSec"><h3>Fruiting now</h3><p class="hint" id="fruitMsg">Checking your past spots…</p><div class="list" id="fruitList"></div>
+      <div class="btn-row"><button class="btn small ghost" type="button" id="fruitRefresh">Check again</button>${"Notification" in window && Notification.permission !== "granted" ? '<button class="btn small" type="button" id="fruitNotify">Alert me when the app opens</button>' : ""}</div></div>
     <div class="section"><h3>Spots to revisit</h3>
       ${rv.length ? `<div class="list">${rv.map(({ f, nv }) => `<a class="card" href="#find-${esc(f.id)}"><img class="thumb" data-photo="${esc(cover(f) || "")}" alt=""><div class="card-body"><div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}</div><div class="meta"><span class="${nv.days <= 21 ? "due" : ""}">${esc(visitLabel(nv.days))}</span></div><div class="meta num"><span>Found ${esc(fmtDate(f.foundAt))}</span>${lastLoc && f.lat != null ? `<span class="sep">${esc(fmtDist(haversine(lastLoc, f)))} away</span>` : ""}</div></div></a>`).join("")}</div>`
       : `<p class="hint">Turn on "Revisit this spot" when you log a find, and it shows up here as that date comes round again.</p>`}
@@ -1436,6 +2262,25 @@ function renderSeason() {
     </div>
   </div>`;
   drawCalendar("all");
+  const showFruit = async force => {
+    const msg = $("#fruitMsg"); if (!msg) return;
+    const cands = fruitingCandidates();
+    if (!cands.length) { msg.textContent = "When a mushroom spot you logged in an earlier year comes back into season, it's checked for rain here. Nothing is in season yet."; $("#fruitList").innerHTML = ""; return; }
+    if (!navigator.onLine && !lsGet("fruiting", null)) { msg.textContent = "Needs signal to check recent rain at your spots."; return; }
+    try {
+      const r = await checkFruiting(force);
+      const hits = (r && r.hits || []).map(h => ({ ...h, f: finds.find(x => x.id === h.id) })).filter(h => h.f);
+      msg.textContent = hits.length
+        ? `In season, with at least 10 mm of rain this past week and mild temperatures. Checked ${ago(r.ts)}. A good sign, not a promise.`
+        : `${cands.length} of your spots ${cands.length === 1 ? "is" : "are"} in season, but none have had enough rain this week. Checked ${ago(r.ts)}.`;
+      $("#fruitList").innerHTML = hits.map(({ f, rain, temp }) => `<a class="card" href="#find-${esc(f.id)}"><img class="thumb" data-photo="${esc(cover(f) || "")}" alt=""><div class="card-body"><div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}</div><div class="meta num"><span class="due">${rain} mm rain this week</span><span class="sep">${temp} °C</span></div><div class="meta num"><span>Found ${esc(fmtDate(f.foundAt))}</span>${lastLoc ? `<span class="sep">${esc(fmtDist(haversine(lastLoc, f)))} away</span>` : ""}</div></div></a>`).join("");
+      hydrateThumbs($("#fruitList"));
+    } catch (e) { msg.textContent = "Couldn't reach the weather service. Try again with signal."; }
+  };
+  showFruit(false);
+  $("#fruitRefresh").addEventListener("click", () => showFruit(true));
+  const fn = $("#fruitNotify");
+  if (fn) fn.addEventListener("click", async () => { try { const r = await Notification.requestPermission(); toast(r === "granted" ? "You'll get an alert when the app opens and a spot looks good" : "Alerts are off"); fn.remove(); } catch (e) { toast("Alerts aren't available here"); } });
   $$("#calSeg button").forEach(b => b.addEventListener("click", () => { $$("#calSeg button").forEach(x => x.setAttribute("aria-pressed", x === b)); drawCalendar(b.dataset.v); }));
   $$(".bar").forEach(b => {
     const show = () => { const i = +b.dataset.m, p = per[i]; $$(".bar").forEach(x => x.setAttribute("aria-pressed", x === b)); $("#chartTip").textContent = `${MONTHS[i]}: ${p.mushroom} ${p.mushroom === 1 ? "mushroom" : "mushrooms"}, ${p.plant} ${p.plant === 1 ? "plant" : "plants"}`; };
@@ -1567,7 +2412,7 @@ async function saveFile(filename, data, type) {
 const stamp = () => new Date().toISOString().slice(0, 10);
 async function exportBackup() {
   const photos = {};
-  for (const f of finds) for (const p of f.photos) {
+  for (const f of finds) for (const p of [...f.photos, ...f.voice]) {
     const rec = await store.get("photos", p.key).catch(() => null);
     if (rec) photos[p.key] = typeof rec === "string" ? rec : await blobToDataURL(rec);
   }
@@ -1576,22 +2421,23 @@ async function exportBackup() {
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
 async function exportCSV() {
-  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
+  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","elevation_m","slope_deg","slopeFaces","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
   const q = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
+  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", f.elev, f.slope, f.aspect == null ? "" : compassName(f.aspect), (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
   const ok = await saveFile(`spore-and-leaf-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
   if (ok) toast("Spreadsheet saved");
 }
 async function importBackup(file) {
   try {
     const j = JSON.parse(await file.text());
+    if (j.app === "spore-and-leaf-share" && Array.isArray(j.finds)) return await importShared(j);
     if (j.app !== "spore-and-leaf" || !Array.isArray(j.finds)) throw new Error("That file isn't a Spore & Leaf backup.");
     const have = new Set(finds.map(f => f.id));
     let added = 0;
     for (const f of j.finds) {
       if (have.has(f.id)) continue;
       const nf = normalise(f);
-      for (const p of nf.photos) { const d = j.photos && j.photos[p.key]; if (d) await store.put("photos", d.startsWith("data:image/svg") ? d : await dataURLToBlob(d), p.key); }
+      for (const p of [...nf.photos, ...nf.voice]) { const d = j.photos && j.photos[p.key]; if (d) await store.put("photos", d.startsWith("data:image/svg") ? d : await dataURLToBlob(d), p.key); }
       await store.put("finds", nf); added++;
     }
     await loadFinds();
@@ -1623,6 +2469,31 @@ async function renderSettings() {
   main.innerHTML = `<div class="wrap view"><div class="settings-list">
     <a class="banner danger" href="#safety" style="text-decoration:none"><svg><use href="#i-warn"/></svg><div class="grow"><b>Safety first.</b> Never eat anything based on this app. Read the safety notes.</div></a>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
+    <div class="panel"><h3>iNaturalist</h3>
+      ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
+        <label class="switch" for="inatAuto"><span>Send new finds automatically</span><input type="checkbox" id="inatAuto" ${lsGet("inatAuto", true) ? "checked" : ""}></label>
+        <div class="field"><label for="inatGeo">Location shown publicly</label><select id="inatGeo"><option value="obscured">Blurred to about 20 km (recommended)</option><option value="private">Hidden completely</option><option value="open">Exact spot</option></select><span class="hint">Experts still see the region, which helps them identify it.</span></div>
+        <div class="btn-row"><button class="btn small" type="button" id="inatNow">Upload and check now</button><button class="btn small ghost" type="button" id="inatOut">Disconnect</button></div>`
+      : `<p>Upload finds so experts on iNaturalist can confirm what they are. Their IDs come back into your log. You need a free iNaturalist account.</p>`}
+      <details ${inat.connected() && !lsGet("inatExpired", false) ? "" : "open"}><summary style="cursor:pointer;font-weight:700">${inat.connected() ? "Reconnect" : "Connect"}</summary>
+        <p><b>Option 1, stay signed in:</b> create an app at <a href="https://www.inaturalist.org/oauth/applications/new" target="_blank" rel="noopener" style="color:var(--plant)">inaturalist.org/oauth/applications/new</a>. Tick "Confidential: no", and set the Redirect URI to <code style="overflow-wrap:anywhere">${esc(redirectURI())}</code>. Paste its Application ID here, then tap Sign in.</p>
+        <div class="field"><label for="inatClient">Application ID</label><input type="text" id="inatClient" value="${esc(inat.clientId)}" autocomplete="off"></div>
+        <div class="btn-row"><button class="btn small plant" type="button" id="inatSignIn">Sign in to iNaturalist</button></div>
+        <p><b>Option 2, quick but daily:</b> while signed in on iNaturalist, open <a href="https://www.inaturalist.org/users/api_token" target="_blank" rel="noopener" style="color:var(--plant)">inaturalist.org/users/api_token</a>, copy the long code, and paste it here. It lasts 24 hours.</p>
+        <div class="field"><label for="inatPaste">API token</label><input type="text" id="inatPaste" autocomplete="off" placeholder="eyJ…"></div>
+        <div class="btn-row"><button class="btn small" type="button" id="inatPasteGo">Use this token</button></div>
+      </details></div>
+    <div class="panel"><h3>PIN lock</h3><p>${pinSet() ? "The app asks for your PIN when you open it." : "Ask for a PIN when the app opens, so others can't see your spots."} It hides the app. The log itself isn't encrypted, so keep your phone's own lock on too.</p>
+      ${pinSet() ? `<div class="field"><label for="pinAfter">Lock again after</label><select id="pinAfter">${[[1, "1 minute away"], [5, "5 minutes away"], [15, "15 minutes away"], [60, "1 hour away"]].map(([v, l]) => `<option value="${v}" ${lsGet("pinAfter", 5) === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="btn-row"><button class="btn small" type="button" id="pinChange">Change PIN</button><button class="btn small danger" type="button" id="pinOff">Turn off PIN</button></div>`
+      : `<div class="btn-row"><button class="btn small" type="button" id="pinChange">Set a PIN</button></div>`}
+      <div id="pinSetBox" hidden class="settings-list"><input type="password" inputmode="numeric" id="pin1" placeholder="New PIN, 4 to 8 digits" maxlength="8" autocomplete="new-password"><input type="password" inputmode="numeric" id="pin2" placeholder="Same PIN again" maxlength="8" autocomplete="new-password"><div class="btn-row"><button class="btn small primary" type="button" id="pinSave">Save PIN</button></div></div></div>
+    <div class="panel"><h3>Share with a buddy</h3><p>Send finds as a file by message, email or Drive. Your buddy opens it here with Open a shared file. Each send is a snapshot. Send again to share changes.</p>
+      <div class="field"><label for="buddyName">Your name, shown to your buddy</label><input type="text" id="buddyName" value="${esc(lsGet("buddyName", ""))}" placeholder="e.g. Henry"></div>
+      <div class="field"><label for="shareWhich">Which finds</label><select id="shareWhich"><option value="all">All my finds</option><option value="mushroom">Mushrooms only</option><option value="plant">Plants only</option>${[...new Set(finds.flatMap(f => f.tags))].sort().map(t => `<option value="tag:${esc(t)}">Tagged #${esc(t)}</option>`).join("")}</select></div>
+      <label class="switch" for="shareBlur"><span>Hide exact spots (rounds to about 1 km)</span><input type="checkbox" id="shareBlur" checked></label>
+      <div class="btn-row"><button class="btn small primary" type="button" id="shareBtnAll"><svg><use href="#i-share"/></svg>Share finds</button><label class="btn small ghost" for="sharedIn">Open a shared file</label></div>
+      <input class="sr" type="file" id="sharedIn" accept="application/json,.json"></div>
     <div class="panel"><h3>Backup</h3><p>${lb ? `Last backup ${esc(ago(lb))}.` : "You haven't made a backup yet."} A backup is one file with every find and photo. Keep it somewhere safe, like Google Drive.</p>
       <div class="btn-row"><button class="btn small plant" type="button" id="bkBtn"><svg><use href="#i-down"/></svg>Save backup</button><button class="btn small" type="button" id="csvBtn">Export spreadsheet (CSV)</button><label class="btn small ghost" for="restoreIn">Restore from backup</label></div>
       <input class="sr" type="file" id="restoreIn" accept="application/json,.json"></div>
@@ -1636,6 +2507,38 @@ async function renderSettings() {
     <div class="panel"><h3>Where your log is kept</h3><p>Everything stays on this phone, in this browser. Nothing is uploaded. Clearing the browser's site data deletes the log, so save a backup now and then.</p></div>
   </div></div>`;
   $("#fieldMode").addEventListener("change", e => { settings.field = e.target.checked; lsSet("field", settings.field); document.body.classList.toggle("field", settings.field); });
+  // iNaturalist
+  const ig = $("#inatGeo"); if (ig) { ig.value = lsGet("inatGeo", "obscured"); ig.addEventListener("change", () => lsSet("inatGeo", ig.value)); }
+  const ia = $("#inatAuto"); if (ia) ia.addEventListener("change", () => lsSet("inatAuto", ia.checked));
+  const inw = $("#inatNow"); if (inw) inw.addEventListener("click", async () => { inw.disabled = true; await inatProcess(); renderSettings(); });
+  const io = $("#inatOut"); if (io) io.addEventListener("click", () => { ["inatAccess", "inatJwt", "inatUser"].forEach(k => lsSet(k, null)); toast("Disconnected from iNaturalist"); renderSettings(); });
+  $("#inatClient").addEventListener("change", e => lsSet("inatClient", e.target.value.trim()));
+  $("#inatSignIn").addEventListener("click", () => { lsSet("inatClient", $("#inatClient").value.trim()); inatSignIn(); });
+  $("#inatPasteGo").addEventListener("click", async () => {
+    const v = $("#inatPaste").value.trim().replace(/^.*"api_token"\s*:\s*"([^"]+)".*$/s, "$1");
+    if (v.split(".").length !== 3) { toast("That doesn't look like an iNaturalist API token"); return; }
+    lsSet("inatJwt", { token: v, ts: Date.now() });
+    try { await inatWhoAmI(); lsSet("inatExpired", false); toast("Connected to iNaturalist"); } catch (e) { lsSet("inatJwt", null); toast("iNaturalist didn't accept that token"); }
+    renderSettings();
+  });
+  // PIN
+  $("#pinChange").addEventListener("click", () => { $("#pinSetBox").hidden = false; $("#pin1").focus(); });
+  $("#pinSave").addEventListener("click", async () => {
+    const a1 = $("#pin1").value, a2 = $("#pin2").value;
+    if (!/^\d{4,8}$/.test(a1)) { toast("Use 4 to 8 digits"); return; }
+    if (a1 !== a2) { toast("The two PINs don't match"); return; }
+    await setPin(a1); unlocked = true; toast("PIN saved"); renderSettings();
+  });
+  const po = $("#pinOff"); if (po) po.addEventListener("click", () => { ["pinHash", "pinSalt", "pinLen"].forEach(k => lsSet(k, null)); toast("PIN turned off"); renderSettings(); });
+  const pa = $("#pinAfter"); if (pa) pa.addEventListener("change", () => lsSet("pinAfter", +pa.value));
+  $("#buddyName").addEventListener("change", e => lsSet("buddyName", e.target.value.trim()));
+  $("#shareBtnAll").addEventListener("click", () => {
+    lsSet("buddyName", $("#buddyName").value.trim());
+    const w = $("#shareWhich").value;
+    const list = finds.filter(f => !f.sample && !f.sharedFrom && (w === "all" || (w.startsWith("tag:") ? f.tags.includes(w.slice(4)) : f.type === w)));
+    sendShare(list, $("#shareBlur").checked);
+  });
+  $("#sharedIn").addEventListener("change", async e => { const file = e.target.files && e.target.files[0]; e.target.value = ""; if (file) { await importBackup(file); renderSettings(); } });
   $("#bkBtn").addEventListener("click", async e => { e.target.disabled = true; await exportBackup(); renderSettings(); });
   $("#csvBtn").addEventListener("click", exportCSV);
   $("#restoreIn").addEventListener("change", async e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) { await importBackup(f); renderSettings(); } });
@@ -1649,12 +2552,15 @@ async function renderSettings() {
    Boot
    ============================================================ */
 (async function start() {
+  showLock();
   await openDB();
   try { await seedExamples(); } catch (e) {}
   await loadFinds();
   route();
-  if (geoAvailable() && !lastLoc) getPosition().catch(() => {});
+  if (geoAvailable()) getPosition().then(() => { const el = $("#sunLine"); if (el) el.innerHTML = sunsetHTML(); }).catch(() => {});
   if (activeTrail) watchTrail();
+  if (new URLSearchParams(location.search).get("code")) inatFinishSignIn().then(() => { route(); inatProcess(); });
+  else setTimeout(inatProcess, 1500);
   if ("serviceWorker" in navigator && location.protocol === "https:" && !/claude\.ai|claudeusercontent/.test(location.host)) {
     try { navigator.serviceWorker.register("sw.js").catch(() => {}); } catch (e) {}
   }
