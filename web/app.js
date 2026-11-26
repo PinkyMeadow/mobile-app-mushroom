@@ -4,8 +4,8 @@
 /* ============================================================
    Storage: IndexedDB, with an in-memory fallback.
    ============================================================ */
-const DB_NAME = "spore-leaf", DB_VER = 1;
-const mem = { finds: new Map(), photos: new Map(), tiles: new Map(), kv: new Map() };
+const DB_NAME = "spore-leaf", DB_VER = 2;
+const mem = { finds: new Map(), photos: new Map(), tiles: new Map(), kv: new Map(), trails: new Map() };
 let idb = null;
 function openDB() {
   return new Promise(res => {
@@ -14,6 +14,7 @@ function openDB() {
       rq.onupgradeneeded = () => {
         const d = rq.result;
         if (!d.objectStoreNames.contains("finds")) d.createObjectStore("finds", { keyPath: "id" });
+        if (!d.objectStoreNames.contains("trails")) d.createObjectStore("trails", { keyPath: "id" });
         for (const s of ["photos", "tiles", "kv"]) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
       };
       rq.onsuccess = () => { idb = rq.result; res(); };
@@ -109,6 +110,62 @@ const EDIBILITY = [
   ["deadly", "Deadly"]
 ];
 const PHOTO_LABELS = ["Whole", "Cap", "Gills or underside", "Stem", "Stem base", "Spore print", "Leaf", "Flower", "Habitat", "Other"];
+const SMELL = ["No smell","Mushroomy","Fruity or apricot","Aniseed","Garlic","Mealy or floury","Radish","Ink or chemical","Unpleasant"];
+const TEXTURE = ["Smooth","Sticky or slimy","Dry","Scaly","Velvety","Fibrous","Warty","Brittle","Rubbery","Woody"];
+const BRUISE = [["No change","transparent"],["Blue","#3f6fc0"],["Red or pink","#c9485a"],["Yellow","#e8c547"],["Orange","#e58a3a"],["Brown","#7a5233"],["Black","#1c1c1c"]];
+// Common dangerous lookalikes, matched against the find's name. Not a complete list.
+const LOOKALIKES = [
+  { keys: ["chanterelle", "cantharellus", "girolle"], list: [
+    ["Jack-o'-lantern (Omphalotus)", "toxic", "Has true, crowded, blade-like gills and grows in clusters on wood or buried roots."],
+    ["False chanterelle (Hygrophoropsis)", "toxic", "Has thin, forked true gills, is brighter orange, and has no apricot smell."]] },
+  { keys: ["field mushroom", "horse mushroom", "agaricus", "meadow mushroom", "button mushroom"], list: [
+    ["Destroying angel and death cap (Amanita)", "deadly", "Gills stay white, the spore print is white, and there's a sac-like volva at the stem base. Dig up the whole base to check."],
+    ["Yellow stainer (Agaricus xanthodermus)", "toxic", "Stem base bruises bright chrome yellow when scratched, and it smells of ink or phenol."]] },
+  { keys: ["puffball", "calvatia", "lycoperdon", "bovista"], list: [
+    ["Young Amanita in its 'egg' stage", "deadly", "Cut it top to bottom. Any outline of a cap, gills or stem inside means it is not a puffball."],
+    ["Common earthball (Scleroderma)", "toxic", "Firm with a thick, warty skin, and the inside turns dark purple-black."]] },
+  { keys: ["wild garlic", "ramsons", "allium ursinum", "ramps"], list: [
+    ["Lily of the valley", "deadly", "No garlic smell when a single leaf is crushed. Smell each leaf on its own, since the scent stays on your hands."],
+    ["Lords-and-ladies (Arum)", "toxic", "Arrow-shaped leaves with branching veins, no garlic smell. Often grows right among wild garlic."],
+    ["Autumn crocus", "deadly", "Leaves have no smell and grow from a bulb-like corm. It grows in some of the same damp meadows and woods."]] },
+  { keys: ["morel", "morchella"], list: [
+    ["False morel (Gyromitra)", "deadly", "Brain-like, wrinkled cap instead of honeycomb pits. Cut it lengthways: true morels are completely hollow."]] },
+  { keys: ["honey fungus", "armillaria"], list: [
+    ["Funeral bell (Galerina marginata)", "deadly", "Grows on wood too, but is smaller, with a rusty brown spore print. Honey fungus has a white spore print."]] },
+  { keys: ["parasol", "macrolepiota"], list: [
+    ["Small Lepiota dapperlings", "deadly", "Look like small parasols. Avoid any parasol-like mushroom with a cap under about 10 cm across."],
+    ["Shaggy parasol (Chlorophyllum)", "toxic", "Flesh bruises orange-red when cut and the stem has no snakeskin pattern. It upsets many people's stomachs."]] },
+  { keys: ["cep", "penny bun", "porcini", "boletus", "bolete", "king bolete"], list: [
+    ["Devil's bolete (Rubroboletus satanas)", "toxic", "Red pores and a reddish stem, and the flesh bruises blue."],
+    ["Bitter bolete (Tylopilus felleus)", "inedible", "Pores turn pink with age, there's a dark net on the stem, and a tiny taste is very bitter."]] },
+  { keys: ["st george", "calocybe gambosa"], list: [
+    ["Deadly fibrecap (Inocybe erubescens)", "deadly", "Grows at the same time of year. Its cap is fibrous and splits, and the flesh reddens with age. Spore print is brown, not white."]] },
+  { keys: ["blusher", "amanita rubescens"], list: [
+    ["Panther cap (Amanita pantherina)", "deadly", "Its flesh never turns pink, and it has a rimmed, collar-like volva at the stem base."]] },
+  { keys: ["wood blewit", "blewit", "lepista"], list: [
+    ["Webcaps (Cortinarius)", "deadly", "Rusty brown spore print and a cobweb-like veil under young caps. Blewits have a pale pink spore print."]] },
+  { keys: ["oyster mushroom", "pleurotus"], list: [
+    ["Angel's wings (Pleurocybella)", "toxic", "Thin, pure white and small, growing on conifer wood."]] },
+  { keys: ["ink cap", "coprinus", "coprinopsis"], list: [
+    ["Common ink cap (Coprinopsis atramentaria)", "toxic", "Grey, smooth and bell-shaped. It causes severe sickness if alcohol is drunk within a few days."]] },
+  { keys: ["elderflower", "elder", "cow parsley", "wild carrot", "hogweed", "sweet cicely", "wild parsnip", "pignut", "angelica"], list: [
+    ["Hemlock (Conium)", "deadly", "Smooth stem with purple blotches and a mousy smell. Never eat a plant from the carrot family that you can't identify for certain."],
+    ["Hemlock water dropwort (Oenanthe crocata)", "deadly", "Grows by water, with roots like small parsnips. One of the most poisonous plants in Britain."]] },
+  { keys: ["wild garlic flower", "three-cornered leek", "wild onion"], list: [
+    ["Star of Bethlehem and other bulbs", "toxic", "No onion or garlic smell. Smell every plant."]] }
+];
+const SCALE_REFS = [
+  ["card", "Bank card, long edge", 85.6], ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["gbp10p", "UK 10p coin", 24.5],
+  ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
+  ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10]
+];
+function suggestLookalikes(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return [];
+  const out = [];
+  for (const g of LOOKALIKES) if (g.keys.some(k => t.includes(k))) for (const [name, danger, how] of g.list) if (!out.some(o => o.name === name)) out.push({ name, danger, how });
+  return out;
+}
 const WEATHER = ["Sunny","Partly cloudy","Overcast","Drizzle","Rain","Heavy rain","Fog","Windy","Frost","Snow"];
 const RAIN_RECENT = ["Dry for days","Light rain recently","Heavy rain recently","Not sure"];
 
@@ -130,6 +187,9 @@ function normalise(f) {
   f.tags = f.tags || [];
   f.habitat = f.habitat || [];
   f.edibility = f.edibility || "unknown";
+  f.lookalikes = f.lookalikes || [];
+  f.smell = f.smell || [];
+  f.texture = f.texture || [];
   return f;
 }
 const cover = f => f.photos && f.photos[0] ? f.photos[0].key : null;
@@ -372,7 +432,9 @@ async function seedExamples() {
       colours: e.colours, colourNote: "", description: e.desc,
       weather: e.weather, rainRecent: e.rain, temp: e.temp, weatherNote: "",
       spore: e.spore || "", gills: e.gills || "", substrate: e.substrate, habitat: e.habitat, trees: e.trees,
-      edibility: e.edib, revisit: !!e.revisit, tags: e.tags, idApp: e.idApp || null
+      edibility: e.edib, revisit: !!e.revisit, tags: e.tags, idApp: e.idApp || null,
+      smell: e.type === "mushroom" && e.revisit ? ["Fruity or apricot"] : [], texture: e.revisit ? ["Smooth"] : [], bruise: "", bruiseNote: "",
+      lookalikes: suggestLookalikes(e.name).map((l, i) => ({ ...l, suggested: true, ruledOut: i === 0, note: i === 0 ? "Blunt ridges, not true gills. Growing in moss, not on wood." : "" }))
     });
   }
 }
@@ -388,11 +450,12 @@ async function removeExamples() {
    Router
    ============================================================ */
 const titleEl = $("#title"), backBtn = $("#backBtn"), brand = $("#brandMark"), main = $("#main"), topActions = $("#topActions");
+topActions.style.cssText = "display:flex;align-items:center";
 backBtn.addEventListener("click", () => { if (history.length > 1) history.back(); else location.hash = "log"; });
 function setChrome({ title, back = false, tab = null, actions = "" }) {
   titleEl.textContent = title;
   backBtn.hidden = !back; brand.style.display = back ? "none" : "";
-  topActions.innerHTML = actions;
+  topActions.innerHTML = (activeTrail ? `<a href="#map" class="badge-todo" style="text-decoration:none;margin-right:6px" aria-label="Recording a trail">● Trail</a>` : "") + actions;
   $$(".tab").forEach(t => t.removeAttribute("aria-current"));
   if (tab) { const t = $(`.tab[data-tab="${tab}"]`); if (t) t.setAttribute("aria-current", "page"); }
 }
@@ -454,7 +517,7 @@ function matches(f) {
   else if (view.filter !== "all" && f.type !== view.filter) return false;
   if (view.tag && !f.tags.includes(view.tag)) return false;
   if (view.q) {
-    const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result].join(" ").toLowerCase();
+    const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
     return view.q.toLowerCase().split(/\s+/).every(w => hay.includes(w.replace(/^#/, "")));
   }
   return true;
@@ -597,6 +660,9 @@ async function renderDetail(id) {
   if (isShroom && f.gills) idBits.push(`<div class="fact"><span class="eyebrow">Underside</span><span class="v">${esc(f.gills)}</span></div>`);
   if (f.substrate) idBits.push(`<div class="fact"><span class="eyebrow">Growing on</span><span class="v">${esc(f.substrate)}</span></div>`);
   if (f.habitat.length) idBits.push(`<div class="fact"><span class="eyebrow">Habitat</span><span class="v">${esc(f.habitat.join(", "))}</span></div>`);
+  if (f.smell.length) idBits.push(`<div class="fact"><span class="eyebrow">Smell</span><span class="v">${esc(f.smell.join(", "))}</span></div>`);
+  if (f.texture.length) idBits.push(`<div class="fact"><span class="eyebrow">Texture</span><span class="v">${esc(f.texture.join(", "))}</span></div>`);
+  if (isShroom && f.bruise) idBits.push(`<div class="fact"><span class="eyebrow">Bruising</span><span class="v">${esc(f.bruise)}${f.bruiseNote ? `<small><br>${esc(f.bruiseNote)}</small>` : ""}</span></div>`);
   if (f.trees) idBits.push(`<div class="fact"><span class="eyebrow">Nearby trees</span><span class="v">${esc(f.trees)}</span></div>`);
 
   main.innerHTML = `<div class="wrap view">
@@ -611,6 +677,8 @@ async function renderDetail(id) {
     </div>
     <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>Never eat anything based on this log or any app${f.edibility === "edible" ? ", even when it's marked edible" : ""}.</b> Many deadly species look like edible ones. Have every find checked in person by an expert.</div></div>
     ${f.idApp && (f.idApp.result || f.idApp.confidence != null) ? `<div class="section"><h3>Identification</h3><div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))"><div class="fact"><span class="eyebrow">${esc(f.idApp.source || "Shroom ID")} says</span><span class="v">${esc(f.idApp.result || "—")}</span></div><div class="fact"><span class="eyebrow">Confidence</span><span class="v num">${f.idApp.confidence != null ? esc(f.idApp.confidence) + "<small> %</small>" : "—"}</span></div></div><p class="hint">An app's suggestion, not a confirmed identification.</p></div>` : ""}
+    ${f.lookalikes.length ? `<div class="section"><h3>Lookalikes</h3><div class="settings-list">${f.lookalikes.map(l => `<div class="panel" style="gap:6px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><b style="min-width:0">${esc(l.name)}</b><span class="edib ${esc(l.danger || "unknown")}" style="flex:none">${esc({ deadly: "Deadly", toxic: "Toxic", inedible: "Inedible" }[l.danger] || "Check")}</span></div>${l.how ? `<p>${esc(l.how)}</p>` : ""}<p style="color:${l.ruledOut ? "var(--plant)" : "var(--danger)"};font-weight:700">${l.ruledOut ? "Ruled out" : "Not ruled out yet"}${l.note ? `<span style="font-weight:400;color:var(--muted)">: ${esc(l.note)}</span>` : ""}</p></div>`).join("")}</div><p class="hint">This list isn't complete. Ruling these out doesn't make a find safe to eat.</p></div>` : ""}
+    ${f.trailId ? `<p class="coords">Found while recording a trail. <a href="#map" style="color:var(--plant)">See trails on the map</a></p>` : ""}
     ${nv ? `<div class="panel"><h3>Revisit this spot</h3><p><span class="due">${esc(visitLabel(nv.days))}</span>. Check around ${esc(fmtDate(nv.date.toISOString(), { day: "numeric", month: "long" }))}${nv.date.getFullYear() !== new Date().getFullYear() ? " next year" : ""}.</p></div>` : ""}
     <div class="facts">
       <div class="fact"><span class="eyebrow">Width</span><span class="v num">${measureVal(f.width)}</span></div>
@@ -685,7 +753,8 @@ async function renderForm(id) {
     foundAt: new Date().toISOString(), createdAt: null,
     width: null, height: null, length: null, stem: null,
     colours: [], colourNote: "", description: "", weather: [], rainRecent: "", temp: null, weatherNote: "",
-    spore: "", gills: "", substrate: "", habitat: [], trees: "", edibility: "unknown", revisit: false, tags: [], idApp: { source: "Shroom ID", result: "", confidence: null }
+    spore: "", gills: "", substrate: "", habitat: [], trees: "", edibility: "unknown", revisit: false, tags: [], idApp: { source: "Shroom ID", result: "", confidence: null },
+    smell: [], texture: [], bruise: "", bruiseNote: "", lookalikes: []
   });
   f.idApp = f.idApp || { source: "Shroom ID", result: "", confidence: null };
   // Photos being edited: existing keys plus new blobs waiting to be saved.
@@ -731,6 +800,12 @@ async function renderForm(id) {
         <span class="hint" id="edibHint">Only mark a find edible once an expert has checked it in person. Never eat anything based on an app.</span></div>
     </fieldset>
 
+    <fieldset><legend>Lookalikes to rule out</legend>
+      <p class="hint" id="laHint" style="margin:0"></p>
+      <div class="settings-list" id="laList"></div>
+      <div class="field"><label for="laAdd">Add a lookalike</label><div style="display:flex;gap:8px"><input type="text" id="laAdd" placeholder="e.g. Jack-o'-lantern"><button class="btn small" type="button" id="laAddBtn">Add</button></div></div>
+    </fieldset>
+
     <fieldset><legend>When</legend>
       <div class="auto-time"><div><div class="eyebrow">Found</div><div class="big num" id="todLabel"></div></div>
         <button class="btn small ghost" type="button" id="editTime"><svg><use href="#i-edit"/></svg>Change</button></div>
@@ -760,6 +835,7 @@ async function renderForm(id) {
         <div class="field"><label for="stem">Stem height</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="stem" value="${toDisp(f.stem)}"><span>${u}</span></div></div>
       </div>
       <span class="hint" id="sizeHint"></span>
+      <span class="hint">Tip: tap Measure under a photo to work out sizes from a coin or card in the shot.</span>
     </fieldset>
 
     <fieldset><legend>Colour</legend>
@@ -781,6 +857,18 @@ async function renderForm(id) {
       <div class="lbl">Habitat</div>
       ${chipGroup("habChips", HABITAT, f.habitat)}
       <div class="field"><label for="trees">Nearby trees or plants</label><input type="text" id="trees" placeholder="e.g. birch, beech, under bracken" value="${esc(f.trees)}"></div>
+    </fieldset>
+
+    <fieldset><legend>Smell, texture and bruising</legend>
+      <div class="lbl">Smell</div>
+      ${chipGroup("smellChips", SMELL, f.smell)}
+      <div class="lbl">Texture</div>
+      ${chipGroup("texChips", TEXTURE, f.texture)}
+      <div id="bruiseWrap" style="display:flex;flex-direction:column;gap:12px">
+        <div class="lbl">Bruises or changes colour when cut</div>
+        ${chipGroup("bruiseChips", BRUISE, f.bruise ? [f.bruise] : [])}
+        <div class="field"><label for="bruiseNote">Bruising notes</label><input type="text" id="bruiseNote" placeholder="e.g. stem base turns yellow when scratched" value="${esc(f.bruiseNote || "")}"></div>
+      </div>
     </fieldset>
 
     <fieldset><legend>Description</legend>
@@ -807,14 +895,50 @@ async function renderForm(id) {
   function applyType() {
     $$(".seg button", form).forEach(x => x.setAttribute("aria-pressed", x.dataset.v === f.type));
     $("#shroomFields").hidden = f.type !== "mushroom";
+    $("#bruiseWrap").hidden = f.type !== "mushroom";
     $("#desc").placeholder = f.type === "plant" ? "Leaf shape, flowers, smell, what it's growing near…" : "Cap shape and texture, ring, smell, how the stem base looks, bruising…";
     $("#sizeHint").textContent = f.type === "plant" ? "For plants, stem height is the main stalk from the ground to the first leaves or flower." : "Width is the cap's widest point. Stem height is from the ground to the underside of the cap.";
-    $("#photoHint").textContent = f.type === "plant" ? "Add the leaves, flowers and the whole plant. The first photo is the cover." : "Add the cap, the underside, the stem base and a spore print. The first photo is the cover.";
+    $("#photoHint").textContent = f.type === "plant" ? "Add the leaves, flowers and the whole plant. Put a coin or bank card beside it, and tap Measure to get sizes from the photo." : "Add the cap, the underside, the stem base and a spore print. Put a coin or bank card beside it, and tap Measure to get sizes from the photo.";
   }
   $$(".seg button", form).forEach(b => b.addEventListener("click", () => { f.type = b.dataset.v; applyType(); }));
   applyType();
   multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips");
   singleSelect(form, "sporeChips"); singleSelect(form, "gillChips"); singleSelect(form, "subChips");
+  multiSelect(form, "smellChips"); multiSelect(form, "texChips"); singleSelect(form, "bruiseChips");
+
+  // Lookalikes: suggested from the name and Shroom ID result, plus your own.
+  let looks = f.lookalikes.map(l => ({ ...l }));
+  const dangerLabel = { deadly: "Deadly", toxic: "Toxic", inedible: "Inedible", unknown: "Check" };
+  function syncLooks() {
+    const sugg = suggestLookalikes($("#name").value + " " + $("#idResult").value);
+    // Drop untouched suggestions that no longer match, then add new ones.
+    looks = looks.filter(l => !l.suggested || l.ruledOut || l.note || sugg.some(s => s.name === l.name));
+    for (const s of sugg) if (!looks.some(l => l.name === s.name)) looks.push({ ...s, suggested: true, ruledOut: false, note: "" });
+    drawLooks();
+  }
+  function drawLooks() {
+    $("#laHint").textContent = looks.length
+      ? "Check each one and say how you ruled it out. This list isn't complete, so an expert should still check your find."
+      : "Type a name above and common dangerous lookalikes appear here. You can add your own too.";
+    $("#laList").innerHTML = looks.map((l, i) => `<div class="panel" style="gap:8px">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><b style="min-width:0">${esc(l.name)}</b><span class="edib ${esc(l.danger || "unknown")}" style="flex:none">${esc(dangerLabel[l.danger] || "Check")}</span></div>
+        ${l.how ? `<p>${esc(l.how)}</p>` : ""}
+        <label class="switch" style="font-size:15px"><span>I've ruled this out</span><input type="checkbox" data-lr="${i}" ${l.ruledOut ? "checked" : ""}></label>
+        <input type="text" data-ln="${i}" placeholder="How you ruled it out, e.g. true gills absent" value="${esc(l.note || "")}" aria-label="How you ruled out ${esc(l.name)}">
+        ${l.suggested ? "" : `<button type="button" class="btn small ghost" data-lx="${i}" style="align-self:flex-start">Remove</button>`}
+      </div>`).join("");
+  }
+  $("#laList").addEventListener("change", e => { const c = e.target.closest("[data-lr]"); if (c) looks[+c.dataset.lr].ruledOut = c.checked; });
+  $("#laList").addEventListener("input", e => { const n = e.target.closest("[data-ln]"); if (n) looks[+n.dataset.ln].note = n.value; });
+  $("#laList").addEventListener("click", e => { const x = e.target.closest("[data-lx]"); if (x) { looks.splice(+x.dataset.lx, 1); drawLooks(); } });
+  const addLook = () => { const v = $("#laAdd").value.trim(); if (!v) return; looks.push({ name: v, danger: "unknown", how: "", ruledOut: false, note: "" }); $("#laAdd").value = ""; drawLooks(); };
+  $("#laAddBtn").addEventListener("click", addLook);
+  $("#laAdd").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addLook(); } });
+  let laTimer = null;
+  const laLater = () => { clearTimeout(laTimer); laTimer = setTimeout(syncLooks, 300); };
+  $("#name").addEventListener("input", laLater);
+  $("#idResult").addEventListener("input", laLater);
+  syncLooks();
 
   // Edibility warning
   const edibHint = () => {
@@ -851,14 +975,19 @@ async function renderForm(id) {
   async function drawPhotos() {
     const g = $("#photoGrid");
     g.hidden = !photos.length;
-    g.innerHTML = photos.map((p, i) => `<div class="ph-item">${i === 0 ? '<span class="cover">Cover</span>' : ""}<img data-i="${i}" alt="${esc(p.label || "Photo")}"><button type="button" class="rm" data-rm="${i}" aria-label="Remove photo">×</button><select data-lbl="${i}" aria-label="What this photo shows">${PHOTO_LABELS.map(l => `<option ${p.label === l ? "selected" : ""}>${l}</option>`).join("")}</select>${i > 0 ? `<button type="button" class="btn small ghost" data-cv="${i}" style="border-radius:0;border:0;border-top:1px solid var(--line)">Make cover</button>` : ""}</div>`).join("");
+    g.innerHTML = photos.map((p, i) => `<div class="ph-item">${i === 0 ? '<span class="cover">Cover</span>' : ""}<img data-i="${i}" alt="${esc(p.label || "Photo")}"><button type="button" class="rm" data-rm="${i}" aria-label="Remove photo">×</button><select data-lbl="${i}" aria-label="What this photo shows">${PHOTO_LABELS.map(l => `<option ${p.label === l ? "selected" : ""}>${l}</option>`).join("")}</select><button type="button" class="btn small ghost" data-ms="${i}" style="border-radius:0;border:0;border-top:1px solid var(--line)">Measure</button>${i > 0 ? `<button type="button" class="btn small ghost" data-cv="${i}" style="border-radius:0;border:0;border-top:1px solid var(--line)">Make cover</button>` : ""}</div>`).join("");
     for (const img of $$("img[data-i]", g)) {
       const p = photos[+img.dataset.i];
       img.src = p.blob ? (p.url ||= URL.createObjectURL(p.blob)) : (await photoURL(p.key)) || "";
     }
   }
   $("#photoGrid").addEventListener("click", e => {
-    const rm = e.target.closest("[data-rm]"), cv = e.target.closest("[data-cv]");
+    const rm = e.target.closest("[data-rm]"), cv = e.target.closest("[data-cv]"), ms = e.target.closest("[data-ms]");
+    if (ms) {
+      const img = $(`img[data-i="${ms.dataset.ms}"]`, $("#photoGrid"));
+      if (img && img.src) openScaleSheet(img.src, (field, cm) => { $("#" + field).value = toDisp(cm); });
+      return;
+    }
     if (rm) { const [p] = photos.splice(+rm.dataset.rm, 1); if (p.key) removedKeys.push(p.key); drawPhotos(); }
     if (cv) { const [p] = photos.splice(+cv.dataset.cv, 1); photos.unshift(p); drawPhotos(); }
   });
@@ -953,6 +1082,12 @@ async function renderForm(id) {
     f.tags = parseTags($("#tags").value);
     f.edibility = $("#edib").value;
     f.revisit = $("#revisit").checked;
+    f.smell = picked(form, "smellChips");
+    f.texture = picked(form, "texChips");
+    f.bruise = f.type === "mushroom" ? (picked(form, "bruiseChips")[0] || "") : "";
+    f.bruiseNote = f.type === "mushroom" ? $("#bruiseNote").value.trim() : "";
+    f.lookalikes = looks.map(({ name, danger, how, ruledOut, note, suggested }) => ({ name, danger, how, ruledOut, note: note.trim(), suggested: !!suggested }));
+    if (activeTrail && !f.trailId) f.trailId = activeTrail.id;
     const conf = $("#idConf").value;
     f.idApp = { source: "Shroom ID", result: $("#idResult").value.trim(), confidence: conf === "" ? null : Math.max(0, Math.min(100, Math.round(+conf))) };
     f.updatedAt = nowISO;
@@ -1010,6 +1145,44 @@ function openPinSheet(f, onPick) {
 }
 
 /* ============================================================
+   Trails: record the walking route while foraging.
+   ============================================================ */
+let activeTrail = lsGet("trailLive", null);   // {id, start, points: [[lat, lng, ts]]}
+let trailWatch = null, wakeLock = null;
+const trailListeners = new Set();
+function trailKm(pts) { let d = 0; for (let i = 1; i < pts.length; i++) d += haversine({ lat: pts[i-1][0], lng: pts[i-1][1] }, { lat: pts[i][0], lng: pts[i][1] }); return d; }
+function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; }
+async function holdScreen() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail) holdScreen(); });
+function watchTrail() {
+  if (!geoAvailable() || trailWatch != null) return;
+  holdScreen();
+  trailWatch = navigator.geolocation.watchPosition(p => {
+    if (!activeTrail) return;
+    const { latitude: lat, longitude: lng, accuracy } = p.coords;
+    lastLoc = { lat, lng, acc: Math.round(accuracy), ts: Date.now() }; lsSet("lastLoc", lastLoc);
+    if (accuracy > 60) return;
+    const pts = activeTrail.points, prev = pts[pts.length - 1];
+    if (prev && haversine({ lat: prev[0], lng: prev[1] }, { lat, lng }) < 0.006) return;
+    pts.push([+lat.toFixed(6), +lng.toFixed(6), Date.now()]);
+    lsSet("trailLive", activeTrail);
+    trailListeners.forEach(fn => fn());
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+}
+function startTrail() {
+  activeTrail = { id: "t-" + uid(), start: Date.now(), points: [] };
+  lsSet("trailLive", activeTrail);
+  watchTrail();
+}
+async function stopTrail() {
+  if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; }
+  try { if (wakeLock) await wakeLock.release(); } catch (e) {}
+  const t = activeTrail; activeTrail = null; lsSet("trailLive", null);
+  if (t && t.points.length >= 2) { await store.put("trails", { ...t, end: Date.now(), km: trailKm(t.points) }); return true; }
+  return false;
+}
+
+/* ============================================================
    Map tab: every find, plus saving an area for offline use
    ============================================================ */
 async function renderMap() {
@@ -1021,6 +1194,7 @@ async function renderMap() {
       <button type="button" class="chip" data-k="mushroom" aria-pressed="true"><span class="dot mushroom"></span>Mushrooms</button>
       <button type="button" class="chip" data-k="plant" aria-pressed="true"><span class="dot plant"></span>Plants</button></span></div>
     <div class="map-full" id="bigMap"></div>
+    <div class="panel" id="trailPanel"></div>
     <div class="panel">
       <h3>Offline map</h3>
       <p id="offMsg">While you have signal, move the map to the area you forage in, then save it. It will load with no signal later. <span class="num">${tileCount}</span> map tiles are saved on this phone.</p>
@@ -1046,6 +1220,46 @@ async function renderMap() {
     const k = b.dataset.k; shown[k] = !shown[k]; b.setAttribute("aria-pressed", shown[k]);
     shown[k] ? layers[k].addTo(m) : layers[k].remove();
   }));
+  // Trails
+  const css = getComputedStyle(document.documentElement);
+  const trailLayer = L.layerGroup().addTo(m);
+  const saved = ((await store.all("trails").catch(() => [])) || []).sort((x, y) => y.start - x.start);
+  const hiddenTrails = new Set(lsGet("hiddenTrails", []));
+  let livePath = null, armDelete = null;
+  function drawTrails() {
+    trailLayer.clearLayers(); livePath = null;
+    for (const t of saved) if (!hiddenTrails.has(t.id)) L.polyline(t.points.map(p => [p[0], p[1]]), { color: css.getPropertyValue("--plant").trim(), weight: 3, opacity: 0.75, dashArray: "6 6" }).addTo(trailLayer);
+    if (activeTrail && activeTrail.points.length) livePath = L.polyline(activeTrail.points.map(p => [p[0], p[1]]), { color: css.getPropertyValue("--shroom").trim(), weight: 4 }).addTo(trailLayer);
+  }
+  function drawTrailPanel() {
+    const tp = $("#trailPanel"); if (!tp) return;
+    if (activeTrail) {
+      const km = trailKm(activeTrail.points);
+      tp.innerHTML = `<h3>Recording a trail</h3><p class="num"><span class="due">${esc(fmtDist(km))}</span> walked · ${esc(fmtDur(Date.now() - activeTrail.start))} · ${activeTrail.points.length} points</p><p>Keep this page open with the screen on. A web page can't track you while the phone is locked. The Android app will.</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
+      $("#trailStop").addEventListener("click", async () => { const ok = await stopTrail(); toast(ok ? "Trail saved" : "Trail too short to save"); renderMap(); });
+    } else {
+      tp.innerHTML = `<h3>Trails</h3><p>Record the route you walk. Finds you log while recording are linked to the trail.</p>
+        <div class="btn-row"><button class="btn plant" type="button" id="trailStart"${geoAvailable() ? "" : " disabled"}><svg><use href="#i-gps"/></svg>Start recording</button></div>
+        ${saved.length ? `<div class="settings-list">${saved.slice(0, 10).map(t => `<div class="switch" style="font-size:15px"><span class="num"><b>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}</b><br><span class="hint">${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}</span></span><span style="display:flex;gap:6px;align-items:center"><button type="button" class="btn small ghost" data-del="${esc(t.id)}">${armDelete === t.id ? "Tap to delete" : "Delete"}</button><input type="checkbox" data-show="${esc(t.id)}" ${hiddenTrails.has(t.id) ? "" : "checked"} aria-label="Show on map"></span></div>`).join("")}</div>` : ""}`;
+      const st = $("#trailStart");
+      if (st) st.addEventListener("click", () => { startTrail(); toast("Recording your trail"); setChrome({ title: "Map", tab: "map" }); drawTrailPanel(); drawTrails(); });
+      $$("[data-show]", tp).forEach(c => c.addEventListener("change", () => { if (c.checked) hiddenTrails.delete(c.dataset.show); else hiddenTrails.add(c.dataset.show); lsSet("hiddenTrails", [...hiddenTrails]); drawTrails(); }));
+      $$("[data-del]", tp).forEach(b => b.addEventListener("click", async () => {
+        const id = b.dataset.del;
+        if (armDelete !== id) { armDelete = id; drawTrailPanel(); return; }
+        await store.del("trails", id); saved.splice(saved.findIndex(t => t.id === id), 1); armDelete = null; drawTrails(); drawTrailPanel(); toast("Trail deleted");
+      }));
+    }
+  }
+  drawTrails(); drawTrailPanel();
+  const onPoint = () => {
+    if (!document.body.contains($("#trailPanel"))) { trailListeners.delete(onPoint); return; }
+    if (livePath && activeTrail) livePath.setLatLngs(activeTrail.points.map(p => [p[0], p[1]])); else drawTrails();
+    drawTrailPanel(); showMe();
+  };
+  trailListeners.add(onPoint);
+  const tick = setInterval(() => { if (!document.body.contains($("#trailPanel"))) { clearInterval(tick); return; } if (activeTrail) drawTrailPanel(); }, 30000);
+
   let meMarker = null;
   const showMe = () => { if (!lastLoc) return; if (meMarker) meMarker.setLatLng([lastLoc.lat, lastLoc.lng]); else meMarker = L.marker([lastLoc.lat, lastLoc.lng], { icon: pinIcon("me"), interactive: false }).addTo(m); };
   showMe();
@@ -1113,15 +1327,128 @@ function renderSeason() {
       <div class="chart-tip num" id="chartTip">Tap a month to see its numbers.</div>
     </div>
 
+    <div class="panel"><h3>Year by year</h3>
+      <p>Each square is one month. Brighter means more finds, so you can compare seasons across years.</p>
+      <div class="seg" role="group" aria-label="Show in calendar" id="calSeg">
+        <button type="button" data-v="all" aria-pressed="true">All</button><button type="button" data-v="mushroom" aria-pressed="false">Mushrooms</button><button type="button" data-v="plant" aria-pressed="false">Plants</button>
+      </div>
+      <div style="overflow-x:auto"><div id="calGrid"></div></div>
+      <div class="legend" id="calLegend"></div>
+      <div id="calDetail" class="settings-list"></div>
+    </div>
+
     <div class="panel"><h3>Most found</h3>
       ${top.length ? `<ul class="rank">${top.map(([n, v]) => `<li><span>${esc(n)}</span><span class="num" style="color:var(--muted)">${v.n}</span><span class="track"><i style="width:${v.n / topMax * 100}%;background:var(--chart-${v.type === "plant" ? "plant" : "shroom"})"></i></span></li>`).join("")}</ul>` : `<p>Name your finds to see which you come across most.</p>`}
     </div>
   </div>`;
+  drawCalendar("all");
+  $$("#calSeg button").forEach(b => b.addEventListener("click", () => { $$("#calSeg button").forEach(x => x.setAttribute("aria-pressed", x === b)); drawCalendar(b.dataset.v); }));
   $$(".bar").forEach(b => {
     const show = () => { const i = +b.dataset.m, p = per[i]; $$(".bar").forEach(x => x.setAttribute("aria-pressed", x === b)); $("#chartTip").textContent = `${MONTHS[i]}: ${p.mushroom} ${p.mushroom === 1 ? "mushroom" : "mushrooms"}, ${p.plant} ${p.plant === 1 ? "plant" : "plants"}`; };
     b.addEventListener("click", show); b.addEventListener("mouseenter", show); b.addEventListener("focus", show);
   });
   hydrateThumbs(main);
+}
+
+function drawCalendar(kind) {
+  const list = finds.filter(f => kind === "all" || f.type === kind);
+  const now = new Date();
+  const years = [...new Set([now.getFullYear(), ...list.map(f => new Date(f.foundAt).getFullYear())])].sort((x, y) => y - x);
+  const grid = {};
+  list.forEach(f => { const d = new Date(f.foundAt), k = d.getFullYear() + "-" + d.getMonth(); (grid[k] = grid[k] || []).push(f); });
+  const max = Math.max(1, ...Object.values(grid).map(g => g.length));
+  const hue = kind === "plant" ? "var(--chart-plant)" : kind === "mushroom" ? "var(--chart-shroom)" : "var(--chart-plant)";
+  // Single-hue ramp, dark (few) to bright (many), on the panel surface.
+  const shade = n => n ? `color-mix(in srgb, ${hue} ${Math.round(28 + 72 * n / max)}%, var(--surface))` : "var(--surface-2)";
+  const cell = "width:100%;aspect-ratio:1;border-radius:4px;border:0;padding:0;cursor:pointer;font-size:11px;font-variant-numeric:tabular-nums";
+  let html = `<div style="display:grid;grid-template-columns:44px repeat(12,minmax(18px,1fr));gap:3px;min-width:300px;align-items:center">`;
+  html += `<span></span>` + MONTHS.map((m, i) => `<span style="font-size:11px;text-align:center;color:${i === now.getMonth() ? "var(--fg)" : "var(--muted)"};font-weight:${i === now.getMonth() ? 700 : 400}">${m[0]}</span>`).join("");
+  for (const y of years) {
+    html += `<span class="num" style="font-size:13px;color:var(--muted)">${y}</span>`;
+    for (let mo = 0; mo < 12; mo++) {
+      const g = grid[y + "-" + mo] || [];
+      const future = y === now.getFullYear() && mo > now.getMonth();
+      html += g.length
+        ? `<button type="button" data-k="${y}-${mo}" style="${cell};background:${shade(g.length)};color:${g.length / max > 0.55 ? "var(--bg)" : "var(--fg)"}" aria-label="${MONTHS[mo]} ${y}: ${g.length} ${g.length === 1 ? "find" : "finds"}">${g.length}</button>`
+        : `<span style="${cell.replace("cursor:pointer;", "")};display:block;background:${future ? "transparent" : "var(--surface-2)"};${future ? "border:1px dashed var(--line);" : ""}" aria-hidden="true"></span>`;
+    }
+  }
+  html += `</div>`;
+  $("#calGrid").innerHTML = html;
+  $("#calLegend").innerHTML = `<span>Fewer</span>${[1, Math.ceil(max / 2), max].filter((v, i, arr) => arr.indexOf(v) === i).map(n => `<span><i style="background:${shade(n)}"></i>${n}</span>`).join("")}<span>More</span>`;
+  $("#calDetail").innerHTML = "";
+  $$("#calGrid button").forEach(b => b.addEventListener("click", () => {
+    const [y, mo] = b.dataset.k.split("-").map(Number);
+    const g = (grid[b.dataset.k] || []).sort((p, q) => new Date(p.foundAt) - new Date(q.foundAt));
+    $("#calDetail").innerHTML = `<h3 style="font-size:16px">${MONTHS[mo]} ${y}</h3>` + g.map(f => `<a href="#find-${esc(f.id)}" class="switch" style="text-decoration:none;color:var(--fg);font-size:15px"><span><span class="dot ${f.type}"></span> ${esc(f.name || "Not yet identified")}</span><span class="hint num">${esc(fmtDate(f.foundAt, { day: "numeric", month: "short" }))}</span></a>`).join("");
+  }));
+}
+
+/* ============================================================
+   Photo scale helper: measure against a coin or card in the shot.
+   ============================================================ */
+function openScaleSheet(src, onUse) {
+  const bg = document.createElement("div");
+  bg.className = "sheet-bg";
+  const refId = lsGet("scaleRef", "card");
+  bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="scTitle" style="overflow-y:auto">
+    <h2 id="scTitle">Measure from the photo</h2>
+    <div class="field"><label for="scRef">What's in the photo for scale?</label><select id="scRef">${SCALE_REFS.map(([id, l, mm]) => `<option value="${id}" ${id === refId ? "selected" : ""}>${esc(l)} (${mm >= 100 ? mm / 10 + " cm" : mm + " mm"})</option>`).join("")}</select></div>
+    <p class="hint" id="scStep" style="margin:0;color:var(--fg)"></p>
+    <canvas id="scCanvas" style="width:100%;border-radius:var(--r-md);touch-action:none;background:var(--surface-2);display:block"></canvas>
+    <div class="banner warn" id="scResult" hidden></div>
+    <div class="btn-row" id="scUse" hidden>
+      <button class="btn small" type="button" data-use="width">Use as width</button><button class="btn small" type="button" data-use="height">Height</button><button class="btn small" type="button" data-use="length">Length</button><button class="btn small" type="button" data-use="stem">Stem height</button>
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="scRedo">Start again</button><button class="btn primary" type="button" id="scDone" style="flex:1">Done</button></div>
+    <p class="hint" style="margin:0">Works best with the coin or card lying right next to the find, photographed from straight above or straight on.</p>
+  </div>`;
+  document.body.appendChild(bg);
+  const cv = $("#scCanvas", bg), ctx = cv.getContext("2d");
+  const img = new Image();
+  let pts = [], lastCm = null;
+  const step = () => {
+    const s = $("#scStep", bg);
+    if (pts.length < 2) s.textContent = pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin or card, straight across its widest point.";
+    else if (pts.length < 4) s.textContent = pts.length === 2 ? "Now tap one end of what you want to measure." : "Tap the other end.";
+    else s.textContent = "Tap again to measure something else.";
+  };
+  function draw() {
+    if (!img.naturalWidth) return;
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    const r = Math.max(6, cv.width / 90), lw = Math.max(2, cv.width / 300);
+    const seg = (p, q, col) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); };
+    const dot = (p, col) => { ctx.fillStyle = col; ctx.strokeStyle = "#000"; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); };
+    if (pts.length >= 2) seg(pts[0], pts[1], "#7fb5e6");
+    if (pts.length >= 4) seg(pts[2], pts[3], "#e9a75e");
+    pts.forEach((p, i) => dot(p, i < 2 ? "#7fb5e6" : "#e9a75e"));
+  }
+  function compute() {
+    if (pts.length < 4) { $("#scResult", bg).hidden = true; $("#scUse", bg).hidden = true; return; }
+    const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    const ref = SCALE_REFS.find(r => r[0] === $("#scRef", bg).value) || SCALE_REFS[0];
+    const refPx = d(pts[0], pts[1]);
+    if (refPx < 4) { $("#scResult", bg).hidden = false; $("#scResult", bg).textContent = "The two scale points are too close together. Start again."; return; }
+    lastCm = d(pts[2], pts[3]) / refPx * ref[2] / 10;
+    const shown = settings.units === "in" ? `${(lastCm / 2.54).toFixed(2)} in` : `${lastCm.toFixed(1)} cm`;
+    $("#scResult", bg).hidden = false; $("#scResult", bg).innerHTML = `<div class="grow">About <b class="num">${esc(shown)}</b>. Treat this as an estimate.</div>`;
+    $("#scUse", bg).hidden = false;
+  }
+  img.onload = () => { const w = Math.min(1600, img.naturalWidth); cv.width = w; cv.height = Math.round(img.naturalHeight * w / img.naturalWidth); draw(); };
+  img.src = src;
+  cv.addEventListener("pointerdown", e => {
+    const r = cv.getBoundingClientRect();
+    const p = [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+    if (pts.length >= 4) pts = pts.slice(0, 2);
+    pts.push(p); draw(); compute(); step();
+  });
+  $("#scRef", bg).addEventListener("change", e => { lsSet("scaleRef", e.target.value); compute(); });
+  $("#scRedo", bg).addEventListener("click", () => { pts = []; draw(); compute(); step(); });
+  $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null) { onUse(b.dataset.use, lastCm); toast("Measurement added"); } });
+  const close = () => bg.remove();
+  $("#scDone", bg).addEventListener("click", close);
+  bg.addEventListener("click", e => { if (e.target === bg) close(); });
+  step();
 }
 
 /* ============================================================
@@ -1155,9 +1482,9 @@ async function exportBackup() {
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
 async function exportCSV() {
-  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","weatherNote","tags","revisit","description","photos","createdAt","updatedAt"];
+  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
   const q = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
+  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
   const ok = await saveFile(`spore-and-leaf-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
   if (ok) toast("Spreadsheet saved");
 }
@@ -1233,6 +1560,7 @@ async function renderSettings() {
   await loadFinds();
   route();
   if (geoAvailable() && !lastLoc) getPosition().catch(() => {});
+  if (activeTrail) watchTrail();
   if ("serviceWorker" in navigator && location.protocol === "https:" && !/claude\.ai|claudeusercontent/.test(location.host)) {
     try { navigator.serviceWorker.register("sw.js").catch(() => {}); } catch (e) {}
   }
