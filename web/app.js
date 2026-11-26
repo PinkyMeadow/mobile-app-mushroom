@@ -2114,7 +2114,9 @@ function edPlace() {
 }
 const ED_LEVELS = ["No records", "Possible", "Common", "Peak"];
 function edLevel(v) { return v >= 0.6 ? 3 : v >= 0.25 ? 2 : v > 0 ? 1 : 0; }
-function edSwatch(L, col) { return [ "var(--surface-2)", `color-mix(in srgb, ${col} 35%, var(--surface))`, `color-mix(in srgb, ${col} 65%, var(--surface))`, col ][L]; }
+// Plants get their own fixed ramp: dark moss, leaf green, bright lime, so each step reads apart.
+const PLANT_RAMP = ["var(--surface-2)", "#3d6b3a", "#6fbf4a", "#d6f56b"];
+function edSwatch(L, col) { if (col === "var(--chart-plant)") return PLANT_RAMP[L]; return [ "var(--surface-2)", `color-mix(in srgb, ${col} 35%, var(--surface))`, `color-mix(in srgb, ${col} 65%, var(--surface))`, col ][L]; }
 function monthRanges(idx) {
   if (!idx.length) return "";
   if (idx.length === 12) return "all year";
@@ -2585,6 +2587,6 @@ async function renderSettings() {
   if (new URLSearchParams(location.search).get("code")) inatFinishSignIn().then(() => { route(); inatProcess(); });
   else setTimeout(inatProcess, 1500);
   if ("serviceWorker" in navigator && location.protocol === "https:" && !/claude\.ai|claudeusercontent/.test(location.host)) {
-    try { navigator.serviceWorker.register("sw.js").catch(() => {}); } catch (e) {}
+    try { navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => reg.update()).catch(() => {}); const hadSW = !!navigator.serviceWorker.controller; navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadSW && !window.__swReloaded) { window.__swReloaded = true; location.reload(); } }); } catch (e) {}
   }
 })();
