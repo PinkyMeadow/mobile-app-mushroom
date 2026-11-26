@@ -809,16 +809,55 @@ function chipSwatch(name, list) { const s = list.find(x => x[0] === name); retur
    Guides: beginner edibles, host trees and tree ID. All offline.
    ============================================================ */
 const guideBanner = `<div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>Learn from this, but never eat from it.</b> Have every find checked in person by an expert, every time.</div></div>`;
+const GUIDE_GROUPS = [
+  ["Shelves and brackets on wood", ["chicken", "hen", "oyster", "reishi", "chaga"]],
+  ["Teeth and spines", ["lionsmane", "bearshead", "hedgehog"]],
+  ["Ridges and trumpets", ["chanterelle", "blacktrumpet"]],
+  ["Gills", ["shaggymane", "winecap", "enoki"]],
+  ["Pores (boletes)", ["porcini"]],
+  ["Odd shapes", ["morel", "puffball", "lobster", "woodear"]]
+];
+function guideCard(href, img, title, sub, line) {
+  return `<a class="gcard" href="${href}">${img ? `<img src="${esc(img)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'gph'}))">` : `<span class="gph"></span>`}<span class="gbody"><b>${esc(title)}</b><i>${esc(sub)}</i><span>${esc(line)}</span></span><svg class="gchev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></a>`;
+}
 function renderGuides() {
   setChrome({ title: "Guides", back: true });
-  const ed = Object.keys(GUIDES).map(id => EDIBLES.find(e => e.id === id)).filter(Boolean);
+  const taxa = lsGet("taxa2", {}), tph = lsGet("treePh", {});
+  const open = new Set(lsGet("guideOpen", ["Shelves and brackets on wood"]));
+  const firstSentence = x => (x.match(/^[^.]*\./) || [x])[0];
+  const grp = (name, count, body, icon) => `<details class="ggroup" data-g="${esc(name)}" ${open.has(name) ? "open" : ""}><summary><span class="gicon ${icon}"></span><span class="gname">${esc(name)}</span><span class="gcount num">${count}</span><svg class="gchev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary><div class="glist">${body}</div></details>`;
+  const shroom = GUIDE_GROUPS.map(([g, ids]) => {
+    const list = ids.map(id => EDIBLES.find(e => e.id === id)).filter(e => e && GUIDES[e.id]);
+    return grp(g, list.length, list.map(e => guideCard(`#guide-${e.id}`, taxa[e.latin] && taxa[e.latin].photo, e.name, e.latin, GUIDES[e.id].why)).join(""), "mushroom");
+  }).join("");
+  const trees = [["Broadleaf trees", "Broadleaf"], ["Conifers", "Conifer"], ["Other places to look", "Habitat"]].map(([g, type]) => {
+    const list = TREES.filter(t => t.type === type).sort((a, b) => a.name.localeCompare(b.name));
+    return grp(g, list.length, list.map(t => guideCard(`#tree-${t.id}`, tph[t.id] && (tph[t.id].leaf || tph[t.id].bark || {}).src, t.name, t.latin, firstSentence(t.bark))).join(""), "plant");
+  }).join("");
   main.innerHTML = `<div class="wrap view">${guideBanner}
-    <div class="section"><h3>Beginner edibles</h3><p class="hint">Often taught first because their key features are distinctive. Every one still has lookalikes.</p>
-      <div class="list" style="grid-template-columns:1fr">${ed.map(e => `<a class="card" href="#guide-${e.id}" style="padding:14px"><div class="card-body"><div class="card-title">${esc(e.name)}</div><div class="meta"><i>${esc(e.latin)}</i></div><div class="hint">${esc(GUIDES[e.id].why)}</div></div></a>`).join("")}</div></div>
-    <div class="section"><h3>Tree ID</h3><p class="hint">Knowing the trees tells you where to look. Tap one for leaf, bark, shape and season, and what grows with it.</p>
-      ${["Broadleaf", "Conifer", "Habitat"].map(t => `<h4 style="margin:10px 0 6px">${t === "Habitat" ? "Other" : t + "s"}</h4><div class="chips">${TREES.filter(x => x.type === t).map(x => `<a class="chip" href="#tree-${x.id}" style="text-decoration:none">${esc(x.name)}</a>`).join("")}</div>`).join("")}</div>
+    <div class="section"><h3>Beginner mushrooms</h3><p class="hint">Often taught first because their key features are distinctive. Every one still has lookalikes.</p>${shroom}</div>
+    <div class="section"><h3>Trees</h3><p class="hint">Knowing the trees tells you where to look.</p>${trees}
+      <div class="btn-row"><button class="btn small" type="button" id="treeSave"><svg><use href="#i-down"/></svg>Save all tree photos for offline</button></div><p class="hint" id="treeSaveMsg" style="margin:0"></p></div>
     <div class="btn-row"><a class="btn" href="#pack">Trip packing list</a></div>
   </div>`;
+  $$(".ggroup").forEach(d => d.addEventListener("toggle", () => {
+    const o = new Set(lsGet("guideOpen", [])); d.open ? o.add(d.dataset.g) : o.delete(d.dataset.g); lsSet("guideOpen", [...o]);
+  }));
+  $("#treeSave").addEventListener("click", async () => {
+    const b = $("#treeSave"), msg = $("#treeSaveMsg");
+    if (!netOK()) { msg.textContent = settings.camp ? "Turn off camping mode first." : "This needs signal."; return; }
+    b.disabled = true;
+    const list = TREES.filter(t => t.type !== "Habitat");
+    let n = 0;
+    for (const t of list) {
+      msg.textContent = `Saving ${t.name} (${++n} of ${list.length})…`;
+      const ph = await treePhotos(t).catch(() => null);
+      // Fetching each image puts it in the offline photo store.
+      for (const x of [ph && ph.leaf, ph && ph.bark]) if (x) await fetch(x.src, { mode: "no-cors" }).catch(() => {});
+    }
+    msg.textContent = "Tree photos saved. They'll show with no signal.";
+    renderGuides();
+  });
 }
 function refPhotoHTML(e, h = 200) {
   const t = lsGet("taxa2", {})[e.latin];
@@ -847,6 +886,37 @@ function renderGuide(id) {
     ${mine.length ? `<a class="btn" href="#species-${encodeURIComponent(speciesKey(mine[0]))}">Your ${mine.length} ${mine.length === 1 ? "find" : "finds"} of this ›</a>` : ""}
   </div>`;
 }
+
+/* Leaf and bark photos for the tree guide, from Wikimedia Commons (openly licensed), saved after the first look. */
+const TREE_QUERY = { spruce: "Picea glauca", aspen: "Populus tremuloides", whiteoak: "Quercus alba", redpine: "Pinus resinosa", willow: "Salix", hawthorn: "Crataegus",
+  mountainash: "Sorbus americana", balsampoplar: "Populus balsamifera", apple: "Malus domestica", cedar: "Thuja occidentalis" };
+const treeQ = t => TREE_QUERY[t.id] || t.latin.split(",")[0].replace(/ and relatives/, "").trim();
+async function commonsPhoto(q, part) {
+  const words = part === "bark" ? /bark|trunk|stem/i : /lea(f|ves)|foliage|needle|twig|branch/i;
+  const u = `https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=12&gsrsearch=${encodeURIComponent(`"${q}" ${part === "bark" ? "bark" : "leaves"} filetype:bitmap`)}&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=640`;
+  const r = await fetch(u); if (!r.ok) throw new Error("commons");
+  const pages = Object.values(((await r.json()).query || {}).pages || {}).sort((a, b) => a.index - b.index);
+  const ok = pages.filter(p => { const m = (p.imageinfo || [])[0]; const lic = m && m.extmetadata && m.extmetadata.LicenseShortName && m.extmetadata.LicenseShortName.value; return m && m.thumburl && /cc|public domain|pd/i.test(lic || ""); });
+  const best = ok.find(p => words.test(p.title)) || ok[0];
+  if (!best) return null;
+  const m = best.imageinfo[0], md = m.extmetadata;
+  const artist = String((md.Artist && md.Artist.value) || "Unknown").replace(/<[^>]*>/g, "").trim().slice(0, 60);
+  return { src: m.thumburl, page: m.descriptionurl, artist, lic: md.LicenseShortName.value };
+}
+async function treePhotos(t, force) {
+  const all = lsGet("treePh", {});
+  if (all[t.id] && !force) return all[t.id];
+  if (!netOK() || t.type === "Habitat") return all[t.id] || null;
+  const q = treeQ(t);
+  const [leaf, bark] = await Promise.all([commonsPhoto(q, "leaf").catch(() => null), commonsPhoto(q, "bark").catch(() => null)]);
+  if (!leaf && !bark) return null;
+  all[t.id] = { leaf, bark, at: Date.now() }; lsSet("treePh", all);
+  return all[t.id];
+}
+function treePhotoHTML(ph, t) {
+  const fig = (x, label) => x ? `<figure style="margin:0"><a href="${esc(x.page)}" target="_blank" rel="noopener"><img src="${esc(x.src)}" alt="${esc(t.name)} ${label.toLowerCase()}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:var(--surface-2);display:block" onerror="this.closest('figure').innerHTML='<p class=hint>Photo not saved yet.</p>'"></a><figcaption class="hint" style="font-size:11px;margin-top:4px"><b style="color:var(--fg)">${label}</b> · ${esc(x.artist)}, ${esc(x.lic)}, Wikimedia Commons</figcaption></figure>` : `<p class="hint">No ${label.toLowerCase()} photo found.</p>`;
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${fig(ph.leaf, t.type === "Conifer" ? "Needles" : "Leaf")}${fig(ph.bark, "Bark")}</div>`;
+}
 function renderTree(id) {
   const t = TREES.find(x => x.id === id);
   if (!t) { location.hash = "guides"; return; }
@@ -854,6 +924,7 @@ function renderTree(id) {
   const grows = EDIBLES.filter(e => HOSTS[e.id] && HOSTS[e.id].trees.includes(id));
   main.innerHTML = `<div class="wrap view">
     <div class="detail-head"><span class="type-pill plant" style="align-self:flex-start"><span class="dot plant"></span>${esc(t.type)}</span><h2>${esc(t.name)}</h2><div class="meta"><i>${esc(t.latin)}</i></div></div>
+    ${t.type === "Habitat" ? "" : `<div id="treePh">${lsGet("treePh", {})[t.id] ? treePhotoHTML(lsGet("treePh", {})[t.id], t) : `<p class="hint">${netOK() ? "Loading leaf and bark photos…" : "Leaf and bark photos load the first time you open this with signal."}</p>`}</div>`}
     <div class="facts" style="grid-template-columns:1fr">
       <div class="fact"><span class="eyebrow">Leaves or needles</span><span class="v" style="font-size:15px">${esc(t.leaf)}</span></div>
       <div class="fact"><span class="eyebrow">Bark</span><span class="v" style="font-size:15px">${esc(t.bark)}</span></div>
@@ -862,8 +933,9 @@ function renderTree(id) {
       <div class="fact"><span class="eyebrow">Don't confuse with</span><span class="v" style="font-size:15px">${esc(t.look)}</span></div>
     </div>
     ${grows.length ? `<div class="section"><h3>Look here for</h3><div class="chips">${grows.map(e => `<a class="chip" href="${GUIDES[e.id] ? "#guide-" + e.id : "#edibles"}" style="text-decoration:none"><span class="dot ${e.kind}"></span>${esc(e.name)}</a>`).join("")}</div></div>` : ""}
-    <p class="hint">Where trees grow changes what's under them. These notes are for eastern and central Canada and the northern US.</p>
+    <p class="hint">Where trees grow changes what's under them. These notes are for eastern and central Canada and the northern US. Photos are picked automatically from Wikimedia Commons; tap one to see its source.</p>
   </div>`;
+  if (t.type !== "Habitat" && !lsGet("treePh", {})[t.id] && netOK()) treePhotos(t).then(ph => { const el = $("#treePh"); if (el) el.innerHTML = ph ? treePhotoHTML(ph, t) : `<p class="hint">Couldn't find photos for this one.</p>`; }).catch(() => {});
 }
 
 /* Side by side: your photo and a reference photo, with the ID checklist. */
@@ -939,7 +1011,7 @@ function renderTrips() {
     ${live && tripById(live) ? "" : `<div class="panel"><h3>Start a trip</h3><p>Finds and hikes you log until you end it are added to the trip.</p>
       <div class="field"><label for="tripName">Name</label><input type="text" id="tripName" value="${esc(`Trip, ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`)}"></div>
       <div class="btn-row"><button class="btn plant" type="button" id="tripGo">Start trip</button></div></div>`}
-    ${list.length ? list.map(t => { const n = finds.filter(f => f.tripId === t.id).length; return `<a class="card" href="#trip-${esc(t.id)}" style="padding:14px"><div class="card-body"><div class="card-title">${esc(t.name)}${t.id === live ? ' <span class="badge-rv">On now</span>' : ""}</div><div class="meta num"><span>${esc(fmtDate(new Date(t.start).toISOString()))}${t.end ? ` to ${esc(fmtDate(new Date(t.end).toISOString()))}` : ""}</span><span class="sep">${n} ${n === 1 ? "find" : "finds"}</span></div></div></a>`; }).join("") : `<p class="hint">No trips yet.</p>`}
+    ${list.length ? list.map(t => { const n = finds.filter(f => f.tripId === t.id).length; return `<a class="card plain" href="#trip-${esc(t.id)}" style="padding:14px"><div class="card-body"><div class="card-title">${esc(t.name)}${t.id === live ? ' <span class="badge-rv">On now</span>' : ""}</div><div class="meta num"><span>${esc(fmtDate(new Date(t.start).toISOString()))}${t.end ? ` to ${esc(fmtDate(new Date(t.end).toISOString()))}` : ""}</span><span class="sep">${n} ${n === 1 ? "find" : "finds"}</span></div></div></a>`; }).join("") : `<p class="hint">No trips yet.</p>`}
   </div>`;
   const go = $("#tripGo");
   if (go) go.addEventListener("click", () => {
