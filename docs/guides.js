@@ -187,3 +187,123 @@ const PACK = [
   ["Comfort", ["Water", "Snacks", "Rain jacket and a warm layer", "Good boots", "Hat and sunscreen"]],
   ["Camping", ["Camping mode on in this app", "Cooler for mushrooms you plan to have checked", "Permit and land permission", "Bear spray, if you're in bear country"]]
 ];
+
+// More trees of eastern and central Canada.
+TREES.push(
+  { id: "shagbark", name: "Shagbark hickory", latin: "Carya ovata", type: "Broadleaf",
+    leaf: "Alternate, compound leaves, usually of 5 leaflets; the top 3 are biggest.", bark: "Grey bark that peels in long strips curling out at both ends, very shaggy.",
+    form: "Tall and straight, in southern Ontario and Quebec.", season: "Round nuts in a thick husk that splits into 4 in autumn.", look: "Ash leaves are opposite. Shagbark's peeling strips are unmistakable." },
+  { id: "bitternut", name: "Bitternut hickory", latin: "Carya cordiformis", type: "Broadleaf",
+    leaf: "Alternate, compound leaves of 7 to 11 narrow leaflets.", bark: "Tight, grey, with a net of shallow ridges.",
+    form: "Tall tree of moist woods and valleys.", season: "Bright sulphur-yellow buds in winter are the giveaway. Bitter nuts.", look: "White ash has opposite leaves and diamond bark." },
+  { id: "ironwood", name: "Ironwood (hop-hornbeam)", latin: "Ostrya virginiana", type: "Broadleaf",
+    leaf: "Alternate, oval, double-toothed leaves, like birch.", bark: "Thin, brown, in narrow, shreddy strips that look finely flaked.",
+    form: "Small understorey tree under maple and oak.", season: "Papery, hop-like seed clusters hang in late summer.", look: "Musclewood has smooth, fluted bark." },
+  { id: "musclewood", name: "Musclewood (blue beech)", latin: "Carpinus caroliniana", type: "Broadleaf",
+    leaf: "Alternate, oval, double-toothed leaves.", bark: "Smooth blue-grey bark over a twisted, rippled trunk, like flexed muscles.",
+    form: "Small tree of damp woods and stream banks.", season: "Three-pointed leafy seed wings in late summer.", look: "American beech has smooth bark too, but on a round trunk." },
+  { id: "silvermaple", name: "Silver maple", latin: "Acer saccharinum", type: "Broadleaf",
+    leaf: "Opposite leaves with 5 very deep lobes, silvery-white underneath.", bark: "Grey, peeling in long strips on older trees.",
+    form: "Big, fast-growing tree of riverbanks and floodplains.", season: "Seeds fall in late spring. Fiddleheads and oysters are often nearby.", look: "Red maple's lobes are much shallower." },
+  { id: "boxelder", name: "Manitoba maple (box elder)", latin: "Acer negundo", type: "Broadleaf",
+    leaf: "Opposite, compound leaves of 3 to 5 irregular leaflets, unlike other maples.", bark: "Light brown with shallow ridges. Green twigs often have a white bloom.",
+    form: "Messy, leaning, many-trunked tree of edges and riverbanks.", season: "Winged seeds hang on all winter.", look: "Poison ivy also has 3 leaflets but is a vine or low shrub." },
+  { id: "blackash", name: "Black ash", latin: "Fraxinus nigra", type: "Broadleaf",
+    leaf: "Opposite, compound leaves of 7 to 11 leaflets with no stalks.", bark: "Soft and corky; it rubs off under your thumb.",
+    form: "Swamps and wet woods. Many are dying from emerald ash borer.", season: "Dying black ash in wet woods can be good for morels.", look: "White ash leaflets have small stalks." },
+  { id: "blackwalnut", name: "Black walnut", latin: "Juglans nigra", type: "Broadleaf",
+    leaf: "Alternate, compound leaves of 15 to 23 leaflets; the end leaflet is often missing.", bark: "Dark, with deep, diamond-patterned ridges.",
+    form: "Tall, open crown, in southern Ontario.", season: "Round green nuts that stain hands brown. Few plants grow under it.", look: "Butternut has paler bark and oval, sticky nuts." },
+  { id: "butternut", name: "Butternut", latin: "Juglans cinerea", type: "Broadleaf",
+    leaf: "Alternate, compound leaves of 11 to 17 leaflets, with an end leaflet.", bark: "Light grey with flat-topped ridges.",
+    form: "Medium tree, now endangered in Canada from canker. Don't harm living ones.", season: "Sticky, oval, lemon-shaped nuts in autumn.", look: "Black walnut has darker bark and round nuts." },
+  { id: "greybirch", name: "Grey birch", latin: "Betula populifolia", type: "Broadleaf",
+    leaf: "Triangular leaves with a long, pointed tip.", bark: "Dull chalky white that doesn't peel, with black triangles under each branch.",
+    form: "Small, often clumped, on poor and disturbed ground.", season: "Chaga sometimes grows on it.", look: "Paper birch bark peels." },
+  { id: "willow", name: "Willows", latin: "Salix", type: "Broadleaf",
+    leaf: "Long, narrow, alternate leaves, often silvery underneath.", bark: "Grey-brown and rough on older trees.",
+    form: "Shrubs or trees by water, ditches and wet ground.", season: "Pussy willow catkins in early spring. Oysters and velvet foot grow on dead willow.", look: "Many willows look alike; the habitat by water is what matters for foraging." },
+  { id: "balsampoplar", name: "Balsam poplar (cottonwood)", latin: "Populus balsamifera, P. deltoides", type: "Broadleaf",
+    leaf: "Oval to triangular leaves, shiny on top. Buds are sticky and smell of balsam in spring.", bark: "Smooth when young, deeply furrowed when old.",
+    form: "Large trees of river flats and shorelines.", season: "Cottony seeds in early summer. Dying cottonwoods are good morel and oyster spots.", look: "Trembling aspen has round leaves and no sticky buds." },
+  { id: "hawthorn", name: "Hawthorns", latin: "Crataegus", type: "Broadleaf",
+    leaf: "Small, toothed or lobed leaves.", bark: "Grey and scaly.",
+    form: "Small, spreading, very thorny trees in old fields and pastures.", season: "White flowers in late spring and small red haws in autumn. Old pastures with hawthorn and apple can hold morels.", look: "Apple has no long thorns." },
+  { id: "mountainash", name: "Mountain ash", latin: "Sorbus", type: "Broadleaf",
+    leaf: "Alternate, compound leaves of 11 to 17 toothed leaflets.", bark: "Smooth, grey, with sideways marks.",
+    form: "Small tree of rocky shores and forest edges.", season: "Bright orange-red berry clusters in autumn and winter. Not a true ash.", look: "Sumac has fuzzy twigs and red cone-shaped clusters." },
+  { id: "chokecherry", name: "Chokecherry", latin: "Prunus virginiana", type: "Broadleaf",
+    leaf: "Alternate, oval leaves with fine, sharp teeth.", bark: "Smooth, dark grey-brown with pale marks.",
+    form: "Shrub or small tree of edges and fence lines.", season: "White flower spikes, then dark red to black astringent cherries. Pits and leaves are toxic.", look: "Black cherry is a bigger tree with narrower leaves." }
+);
+// Link the new trees to what grows on or near them.
+const addHosts = { morel: ["blackash", "balsampoplar", "hawthorn"], chicken: ["shagbark"], oyster: ["balsampoplar", "willow", "boxelder", "silvermaple"], enoki: ["willow", "balsampoplar"],
+  fiddlehead: ["silvermaple", "boxelder"], hen: [], pheasant: ["boxelder", "silvermaple"], chaga: [], walnut: ["blackwalnut", "butternut"], hazel: ["ironwood"] };
+HOSTS.bearshead = { trees: ["beech", "sugarmaple", "redoak", "hardwoodlogs"], note: "Logs and wounds on beech, maple and oak, in late summer and autumn." };
+HOSTS.woodear = { trees: ["boxelder", "elm", "hardwoodlogs"], note: "Dead branches and logs, especially Manitoba maple and elm." };
+HOSTS.chaga = { trees: ["paperbirch", "yellowbirch", "greybirch"], note: "Living birch only. Easiest to spot in winter, with the leaves down." };
+HOSTS.reishi = { trees: ["hemlock"], note: "Dead and dying eastern hemlock, stumps and logs." };
+for (const [k, v] of Object.entries(addHosts)) if (HOSTS[k]) HOSTS[k].trees = [...new Set([...HOSTS[k].trees, ...v])];
+
+Object.assign(GUIDES, {
+  porcini: {
+    why: "Boletes have a sponge of pores instead of gills. The king is big, fat-stemmed, and doesn't bruise blue.",
+    steps: ["Thick brown bun-shaped cap, sticky when wet.", "Under the cap: a sponge of pores, white when young, then yellow to olive. They don't bruise blue.", "Fat stem with a fine raised white net pattern, at least near the top.", "Touch a tiny piece to your tongue and spit it out: mild, not bitter."],
+    vs: [["Bitter bolete (Tylopilus felleus)", "Inedible", "Pinkish pores, a dark net on the stem, and very bitter."], ["Red-pored boletes", "Toxic", "Red or orange pores and often a fast blue bruise. Avoid any bolete like this."], ["Devil's bolete and relatives", "Toxic", "Red pores and a red net on the stem."]],
+    harvest: "Cut or twist it out. Check for maggots by slicing the stem, and peel off old, slimy pores. Always cook it.",
+    keep: "Use within 2 days, or slice and dry. Dried porcini keep for a year." },
+  blacktrumpet: {
+    why: "Thin, dark, hollow trumpets with no gills. Nothing dangerous looks quite like them, but they're hard to see.",
+    steps: ["Trumpet or funnel shape, hollow right to the base.", "Thin, almost leathery flesh.", "Outside smooth to slightly wrinkled grey, with no gills or ridges.", "In moss under oak and beech, often in groups."],
+    vs: [["Devil's urn (Urnula)", "Inedible", "Tough black cup on wood in early spring."], ["Fragrant black trumpet", "Edible", "Paler, with faint ridges. Also edible."]],
+    harvest: "Pinch at the base and shake out the debris inside the funnel.",
+    keep: "Keeps a few days. Dries very well." },
+  lobster: {
+    why: "A bright red-orange crust over a misshapen mushroom. It looks like nothing else, but the host underneath can't be identified.",
+    steps: ["Bright red-orange, hard surface, like cooked lobster shell.", "Twisted, misshapen mushroom with blunt ridges where gills were.", "Slice it: firm, white flesh inside.", "Growing from the ground in mixed woods."],
+    vs: [["Old or rotting lobsters", "Avoid", "Purple or dark spots, soft flesh, or a bad smell. Throw them out."], ["Other orange crusts", "Unknown", "If it isn't firm with white flesh inside, leave it."]],
+    harvest: "Pick only firm, bright ones. Brush and cut away dirt in the folds. Always cook it, and try a small amount the first time.",
+    keep: "Keeps a week in the fridge. Dries well." },
+  shaggymane: {
+    why: "Tall, white and shaggy, and it dissolves into black ink as it ages, so it's easy to learn.",
+    steps: ["Tall white cylinder of a cap covered in shaggy, upturned scales.", "Gills tightly packed, white, then pink, then black and inky from the bottom edge up.", "Hollow stem with a loose ring that slides.", "Grows on lawns, trail edges and disturbed ground."],
+    vs: [["Common ink cap (Coprinopsis atramentaria)", "Toxic with alcohol", "Smooth grey cap, no shaggy scales. Makes you very sick with alcohol, even days later."], ["Young Amanita", "Deadly", "Has a cup at the base and white gills that never turn to ink."]],
+    harvest: "Pick only young ones with white gills, and cook them within a few hours. They turn to ink fast, even in the fridge.",
+    keep: "Use the same day." },
+  winecap: {
+    why: "A big, wine-red mushroom of wood chips with a distinctive cog-wheel ring.",
+    steps: ["Wine-red to brown cap, fading to tan with age.", "Gills grey, then purple-black. Spore print purple-black.", "Thick white stem with a ring whose underside looks like a cog-wheel.", "Growing in wood chips, mulch or garden beds."],
+    vs: [["Deadly Galerina and other small brown mushrooms", "Deadly", "Small, brown, with rusty-brown spores. Wine caps are much bigger, with purple-black spores."], ["Hypholoma and Agrocybe", "Avoid", "Grow in mulch too, with different spore prints and no cog-wheel ring."]],
+    harvest: "Pick young ones, before the cap flattens. Take a spore print from every batch.",
+    keep: "Use within 2 days." },
+  bearshead: {
+    why: "A branching white clump of hanging spines on hardwood. Like lion's mane, nothing poisonous looks like it here.",
+    steps: ["Branched white clump with tufts of hanging spines at the tips.", "No cap, gills or pores.", "On hardwood logs or wounds: beech, maple or oak.", "White and fresh-smelling."],
+    vs: [["Comb tooth and lion's mane", "Edible", "Close relatives. All are edible."], ["Old bear's head", "Not good", "Yellow-brown or sour."]],
+    harvest: "Cut from the wood and leave the base. Rinse quickly; debris hides in the branches.",
+    keep: "Keeps 3 to 5 days in a paper bag in the fridge." },
+  woodear: {
+    why: "A thin, rubbery, brown ear on dead wood. Easy to recognise, and found almost year-round.",
+    steps: ["Thin, rubbery, brown and ear- or cup-shaped.", "Inside smooth; outside finely velvety.", "Stretches and springs back.", "Growing on dead wood."],
+    vs: [["Brown cup fungi (Peziza)", "Avoid", "Brittle and snap instead of bending, and mostly grow on soil."], ["Amber jelly roll (Exidia)", "Not good", "Wobbly, shapeless jelly, not an ear."]],
+    harvest: "Peel from the wood and rinse well. Always cook it. Dried wood ears swell again in water.",
+    keep: "Dries very well and keeps for months." },
+  enoki: {
+    why: "One of the few mushrooms of the cold months. Its dark velvety stem and white spores tell it apart from a deadly lookalike.",
+    steps: ["Sticky orange-brown caps in clumps on wood.", "Dark brown, velvety stem, darker at the base.", "No ring on the stem.", "White spore print. Always take one."],
+    vs: [["Funeral bell (Galerina marginata)", "Deadly", "Similar brown caps on wood, but a ring on the stem and a rusty-brown spore print."], ["Sulphur tuft", "Toxic", "Yellow, with greenish to purple-brown gills."]],
+    harvest: "Cut the caps off. Take a spore print from every clump before cooking.",
+    keep: "Keeps a few days in the fridge." },
+  chaga: {
+    why: "A black, cracked lump on living birch. It's used for tea rather than eaten, and it's slow to grow back.",
+    steps: ["Black, deeply cracked, charcoal-like growth on a living birch.", "Break a piece: rusty orange-yellow, corky inside.", "Only on birch.", "Easiest to find in winter."],
+    vs: [["Birch burls", "Not a fungus", "Smooth wood, covered in bark."], ["Black knot on cherry", "Not chaga", "Small, black, on cherry twigs."], ["Tinder conk", "Not chaga", "Hoof-shaped grey bracket."]],
+    harvest: "Use a hatchet on the outer part only, and leave at least a third so it can regrow. Never take it from the same tree twice. Chaga is very high in oxalates and interacts with blood thinners and diabetes medicine; check with a doctor.",
+    keep: "Break into small pieces and dry fully. Keeps for years." },
+  reishi: {
+    why: "A shiny, varnished, red-brown shelf on hemlock. Too woody to eat; people make tea from it.",
+    steps: ["Shiny, lacquered red-brown cap, with a white or yellow edge when growing.", "White pores underneath that bruise brown. No gills.", "Often a shiny side stem.", "Growing on hemlock."],
+    vs: [["Artist's conk", "Inedible", "Dull, grey-brown top, and grows on hardwood."], ["Red-belted conk", "Inedible", "Hoof-shaped, with a red band, on conifers."]],
+    harvest: "Pick fresh, growing ones, and slice while soft, as they turn rock hard. Reishi can affect blood thinners and blood pressure; check with a doctor.",
+    keep: "Dry the slices. Keeps for years." }
+});

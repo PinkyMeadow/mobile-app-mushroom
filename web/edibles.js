@@ -140,3 +140,21 @@ const EDIBLE_ID = {
   cranberry: ["Low creeping plant with small, oval, leathery evergreen leaves.", "Red berries that bounce and have air pockets inside.", "Pink flowers with petals curved back, like a shooting star.", "Grows in bogs. The berries taste very sour."],
   sloe: ["Small blue-black berries with a dusty bloom, each with one stone.", "Dense, very thorny shrub.", "White flowers appear in early spring, before the leaves.", "Very sour until after a frost. Never eat the stones."]
 };
+
+// More fungi for the beginner guides.
+EDIBLES.push(
+  { id: "bearshead", kind: "mushroom", name: "Bear's head tooth", latin: "Hericium americanum", na: [8, 9, 10], eu: [8, 9, 10], wx: [10, 22],
+    where: "Logs and wounds on beech, maple and oak.", look: "No dangerous lookalikes. Its relatives, lion's mane and comb tooth, are edible too." },
+  { id: "woodear", kind: "mushroom", name: "Wood ear", latin: "Auricularia americana", na: [4, 5, 6, 7, 8, 9, 10, 11], eu: [1, 2, 3, 4, 5, 10, 11, 12], wx: [3, 22],
+    where: "Dead hardwood and conifer logs, often after rain, even in mild winter spells.", look: "Brittle cup fungi and false morels are not rubbery. Check it's thin, rubbery and ear-shaped." },
+  { id: "chaga", kind: "mushroom", name: "Chaga", latin: "Inonotus obliquus", na: [1, 2, 3, 10, 11, 12], eu: [1, 2, 3, 10, 11, 12],
+    where: "Living birch trunks. Used for tea, not as food.", look: "Birch burls are smooth wood, not black and cracked. Black knots on cherry are a different fungus." },
+  { id: "reishi", kind: "mushroom", name: "Hemlock reishi", latin: "Ganoderma tsugae", na: [6, 7, 8, 9], eu: [], wx: [15, 26],
+    where: "Dead and dying hemlock. Too woody to eat; used for tea.", look: "Artist's conk is dull, not varnished, and grows on hardwoods." }
+);
+Object.assign(EDIBLE_ID, {
+  bearshead: ["A branching white clump with tufts of long, hanging spines at the branch tips.", "No cap, gills or pores.", "Grows on hardwood logs and wounds.", "Fresh ones are white; old ones turn yellow-brown."],
+  woodear: ["Thin, rubbery, brown, shaped like an ear or cup.", "Smooth on the inside, finely velvety on the outside.", "Bends and springs back; it doesn't snap or crumble.", "Grows on wood, often in groups."],
+  chaga: ["Black, deeply cracked, charcoal-like lump on a living birch.", "Break a piece: rusty orange-yellow, corky inside.", "Only on birch. Don't take it from other trees.", "Leave at least a third of it on the tree so it regrows."],
+  reishi: ["Shiny, varnished-looking red-brown cap with a white or yellow edge when growing.", "Underside is white pores that bruise brown, no gills.", "Often has a side stem that is shiny too.", "Grows on hemlock."]
+});

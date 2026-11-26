@@ -2683,7 +2683,7 @@ async function taxonIds(list) {
 }
 async function areaCounts(place, onProgress) {
   const boundary = edUsesBoundary(place);
-  const key = boundary ? "p" + place.placeId : `${place.lat.toFixed(1)},${place.lng.toFixed(1)},r${edView.radius}`;
+  const key = (boundary ? "p" + place.placeId : `${place.lat.toFixed(1)},${place.lng.toFixed(1)},r${edView.radius}`) + "/n" + EDIBLES.length;
   const all = lsGet("edCounts", {});
   if (all[key] && Date.now() - all[key].ts < 14 * DAY) return all[key].counts;
   onProgress && onProgress("Looking up species on iNaturalist…");
