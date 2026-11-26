@@ -607,6 +607,7 @@ async function route() {
   if (h.startsWith("find-")) return renderDetail(h.slice(5));
   if (h === "species") return renderSpeciesList();
   if (h === "review") return renderReview();
+  if (h === "inat-past") return renderInatPast();
   if (h === "trash") return renderTrash();
   if (h === "trips") return renderTrips();
   if (h.startsWith("trip-")) return renderTrip(h.slice(5));
@@ -1084,6 +1085,92 @@ async function renderTrip(id) {
     saveTrips(lsGet("trips", []).filter(x => x.id !== id)); if (activeTripId() === id) lsSet("tripLive", null);
     await loadFinds(); toast("Trip deleted. Its finds are kept."); location.hash = "trips";
   });
+}
+
+/* ============================================================
+   Upload past finds to iNaturalist: pick which ones, skip any already there.
+   ============================================================ */
+const inatState = f => f.inat && f.inat.id ? "sent" : f.sample || f.sharedFrom ? "never" : f.lat == null ? "noloc" : f.inatQueued ? "queued" : "unsent";
+// Finds already on iNaturalist that you posted another way (same day, within 300 m).
+async function inatFindDuplicates(list) {
+  const me = lsGet("inatUser", null) || await inatWhoAmI();
+  if (!me || !me.id) return {};
+  const days = [...new Set(list.map(f => (f.foundAt || "").slice(0, 10)).filter(Boolean))];
+  const out = {};
+  for (const d of days) {
+    const r = await fetch(`${INAT_API}/observations?user_id=${me.id}&on=${d}&per_page=200&order_by=observed_on`);
+    if (!r.ok) continue;
+    const obs = ((await r.json()).results || []).filter(o => o.geojson && o.geojson.coordinates);
+    for (const f of list.filter(x => (x.foundAt || "").slice(0, 10) === d)) {
+      const m = obs.map(o => ({ o, km: haversine({ lat: f.lat, lng: f.lng }, { lat: o.geojson.coordinates[1], lng: o.geojson.coordinates[0] }) })).filter(x => x.km < 0.3).sort((a, b) => a.km - b.km)[0];
+      if (m) out[f.id] = { id: m.o.id, name: m.o.taxon ? (m.o.taxon.preferred_common_name || m.o.taxon.name) : "Unknown", m: Math.round(m.km * 1000) };
+    }
+  }
+  return out;
+}
+async function renderInatPast() {
+  setChrome({ title: "Upload past finds", back: true });
+  const list = finds.slice().sort((a, b) => (b.foundAt || "").localeCompare(a.foundAt || ""));
+  const by = k => list.filter(f => inatState(f) === k);
+  const unsent = by("unsent"), queued = by("queued"), sent = by("sent"), noloc = by("noloc");
+  const dups = lsGet("inatDups", {});
+  const row = (f, extra) => `<div class="panel" style="gap:6px;padding:12px 14px" data-row="${esc(f.id)}"><label class="switch" style="align-items:center;gap:12px">
+      <span style="min-width:0"><b>${esc(f.name || "Not yet identified")}</b><br><span class="hint">${esc(fmtDate(f.foundAt))}${f.photos && f.photos.length ? ` · ${f.photos.length} ${f.photos.length === 1 ? "photo" : "photos"}` : " · no photo"}</span></span>
+      ${extra}</label>${dups[f.id] ? `<div class="banner warn" style="margin:0"><div class="grow"><b>Might already be on iNaturalist.</b> You posted <a href="${INAT}/observations/${dups[f.id].id}" target="_blank" rel="noopener" style="color:inherit">${esc(dups[f.id].name)}</a> that day, ${dups[f.id].m} m away. It's unticked so it isn't posted twice.</div><button class="btn small" type="button" data-link="${esc(f.id)}">It's the same, link it</button></div>` : ""}</div>`;
+  const connected = inat.connected() && !lsGet("inatExpired", false);
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">New finds upload on their own when "Send new finds automatically" is on. Older finds only go if you pick them here. Finds already on iNaturalist are never sent again.</p>
+    ${connected ? "" : `<a class="banner warn" href="#more" style="text-decoration:none;color:inherit"><div class="grow"><b>${inat.connected() ? "Your iNaturalist sign-in has expired." : "Connect iNaturalist first."}</b> You can still pick finds now; they upload once you're connected. Tap to go to More.</div></a>`}
+    <div class="facts" style="grid-template-columns:repeat(4,1fr)">
+      <div class="fact"><span class="eyebrow">Not sent</span><span class="v num">${unsent.length}</span></div><div class="fact"><span class="eyebrow">Waiting</span><span class="v num">${queued.length}</span></div>
+      <div class="fact"><span class="eyebrow">On iNat</span><span class="v num">${sent.length}</span></div><div class="fact"><span class="eyebrow">No location</span><span class="v num">${noloc.length}</span></div></div>
+    <p class="hint" id="dupMsg" style="margin:0"></p>
+    <div class="section"><h3>Not sent yet</h3>
+      ${unsent.length ? `<div class="btn-row"><button class="btn small" type="button" id="selAll">Select all</button><button class="btn small ghost" type="button" id="selNone">Select none</button></div>
+        ${unsent.map(f => row(f, `<input type="checkbox" data-pick="${esc(f.id)}" ${dups[f.id] ? "" : "checked"} aria-label="Upload ${esc(f.name || "this find")}">`)).join("")}
+        <div class="btn-row"><button class="btn primary" type="button" id="upPicked" style="flex:1"></button></div>` : `<p class="hint">Nothing left to send.</p>`}</div>
+    ${queued.length ? `<div class="section"><h3>Waiting to upload</h3><p class="hint">These go as soon as you have signal${connected ? "" : " and are connected"}.</p>${queued.map(f => row(f, `<button class="btn small ghost" type="button" data-unq="${esc(f.id)}">Don't send</button>`)).join("")}</div>` : ""}
+    ${noloc.length ? `<div class="section"><h3>Need a location first</h3><p class="hint">iNaturalist needs to know where it was found. Open one and pin it on the map.</p>${noloc.map(f => `<a class="panel" href="#find-${esc(f.id)}" style="text-decoration:none;color:inherit;padding:12px 14px"><b>${esc(f.name || "Not yet identified")}</b><span class="hint">${esc(fmtDate(f.foundAt))}</span></a>`).join("")}</div>` : ""}
+    ${sent.length ? `<details class="section"><summary style="cursor:pointer;font-weight:700">Already on iNaturalist (${sent.length})</summary>${sent.map(f => `<a class="panel" href="${esc(f.inat.url || `${INAT}/observations/${f.inat.id}`)}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;padding:12px 14px;margin-top:8px"><b>${esc(f.name || "Not yet identified")}</b><span class="hint">${esc(fmtDate(f.foundAt))} · ${esc(inatQualityLabel(f.inat.quality))}</span></a>`).join("")}</details>` : ""}
+  </div>`;
+  const picks = () => $$("[data-pick]").filter(c => c.checked).map(c => c.dataset.pick);
+  const label = () => { const b = $("#upPicked"); if (b) { const n = picks().length; b.textContent = n ? `Upload ${n} ${n === 1 ? "find" : "finds"}` : "Pick finds to upload"; b.disabled = !n; } };
+  label();
+  $$("[data-pick]").forEach(c => c.addEventListener("change", label));
+  const sa = $("#selAll"); if (sa) sa.addEventListener("click", () => { $$("[data-pick]").forEach(c => { c.checked = true; }); label(); });
+  const sn = $("#selNone"); if (sn) sn.addEventListener("click", () => { $$("[data-pick]").forEach(c => { c.checked = false; }); label(); });
+  const up = $("#upPicked"); if (up) up.addEventListener("click", async () => {
+    const ids = new Set(picks());
+    for (const f of finds.filter(x => ids.has(x.id) && inatState(x) === "unsent")) { f.inatQueued = true; await store.put("finds", f); }
+    await loadFinds();
+    toast(netOK() && connected ? `Uploading ${ids.size} ${ids.size === 1 ? "find" : "finds"}…` : `${ids.size} queued. They upload when you're online and connected.`);
+    renderInatPast(); inatProcess().then(() => { if (location.hash === "#inat-past") renderInatPast(); });
+  });
+  $$("[data-unq]").forEach(b => b.addEventListener("click", async () => { const f = finds.find(x => x.id === b.dataset.unq); delete f.inatQueued; await store.put("finds", f); await loadFinds(); renderInatPast(); }));
+  $$("[data-link]").forEach(b => b.addEventListener("click", async () => {
+    const f = finds.find(x => x.id === b.dataset.link), d = dups[f.id];
+    f.inat = { id: d.id, url: `${INAT}/observations/${d.id}`, uploadedAt: Date.now(), linked: true }; delete f.inatQueued;
+    await store.put("finds", f); delete dups[f.id]; lsSet("inatDups", dups); await loadFinds();
+    toast("Linked. Its iNaturalist IDs will come into your log."); renderInatPast(); inatProcess();
+  }));
+  // Look for posts made outside the app, once per visit.
+  const checked = lsGet("inatDupChecked", {});
+  const check = unsent.concat(queued).filter(f => !checked[f.id]);
+  const nDup = Object.keys(dups).filter(k => unsent.some(f => f.id === k)).length;
+  if (!check.length && nDup) $("#dupMsg").textContent = `${nDup} ${nDup === 1 ? "find looks like it's" : "finds look like they're"} already on iNaturalist. Check ${nDup === 1 ? "it" : "them"} below.`;
+  if (check.length && netOK() && connected && !renderInatPast.checking) {
+    renderInatPast.checking = true; $("#dupMsg").textContent = "Checking iNaturalist for finds you already posted yourself…";
+    try {
+      const found = await inatFindDuplicates(check);
+      const all = lsGet("inatDups", {}); Object.assign(all, found); lsSet("inatDups", all);
+      check.forEach(f => { checked[f.id] = Date.now(); }); lsSet("inatDupChecked", checked);
+      // Pull any newly flagged ones out of the queue so nothing goes twice.
+      for (const f of queued.filter(x => found[x.id])) { delete f.inatQueued; await store.put("finds", f); }
+      if (Object.keys(found).length) { await loadFinds(); renderInatPast.checking = false; if (location.hash === "#inat-past") return renderInatPast(); }
+      const el = $("#dupMsg"); if (el) el.textContent = nDup ? el.textContent : "Checked: none of these are on iNaturalist yet.";
+    } catch (e) { const el = $("#dupMsg"); if (el) el.textContent = e.message === "token_expired" ? "Your sign-in expired, so the duplicate check was skipped." : "Couldn't check iNaturalist for duplicates right now."; }
+    renderInatPast.checking = false;
+  }
 }
 
 /* ============================================================
@@ -2366,20 +2453,30 @@ async function inatUpload(f) {
     f.spore && "Spore print: " + f.spore, f.gills && "Underside: " + f.gills, f.smell.length && "Smell: " + f.smell.join(", "), f.texture.length && "Texture: " + f.texture.join(", "),
     f.bruise && "Bruising: " + f.bruise + (f.bruiseNote ? " (" + f.bruiseNote + ")" : ""), f.substrate && "Growing on: " + f.substrate, f.habitat.length && "Habitat: " + f.habitat.join(", "), f.trees && "Nearby: " + f.trees,
     f.width != null && `Cap/width ${(+f.width).toFixed(1)} cm`, f.stem != null && `Stem ${(+f.stem).toFixed(1)} cm`, "Logged with Spore & Leaf."].filter(Boolean).join("\n");
+  // Remember the observation as soon as it exists, so a dropped connection mid-upload
+  // carries on with the photos next time instead of posting the find twice.
+  if (!f.inatUuid) { f.inatUuid = (crypto.randomUUID ? crypto.randomUUID() : uid()); await store.put("finds", f); }
+  let obsId = f.inatPending && f.inatPending.id;
+  if (!obsId) {
   const obs = await inatFetch("/observations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ observation: {
-    species_guess: f.name || (f.idApp && f.idApp.result) || "", observed_on_string: f.foundAt, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    uuid: f.inatUuid, species_guess: f.name || (f.idApp && f.idApp.result) || "", observed_on_string: f.foundAt, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     description: notes, latitude: f.lat, longitude: f.lng, positional_accuracy: f.acc || undefined, geoprivacy: geopriv, owners_identification_from_vision: false
   } }) });
-  const obsId = obs.id || (obs.results && obs.results[0] && obs.results[0].id);
+  obsId = obs.id || (obs.results && obs.results[0] && obs.results[0].id);
   if (!obsId) throw new Error("no id");
+  f.inatPending = { id: obsId, done: [] }; await store.put("finds", f);
+  }
   for (const ph of f.photos) {
+    if (f.inatPending.done.includes(ph.key)) continue;
     const rec = await store.get("photos", ph.key).catch(() => null);
     if (!rec || typeof rec === "string") continue;
     const fd = new FormData();
     fd.append("observation_photo[observation_id]", obsId);
     fd.append("file", rec, "photo.jpg");
     await inatFetch("/observation_photos", { method: "POST", body: fd });
+    f.inatPending.done.push(ph.key); await store.put("finds", f);
   }
+  delete f.inatPending;
   return obsId;
 }
 function idDiffers(name, taxon, common) {
@@ -2441,7 +2538,8 @@ async function inatProcess() {
   inatBusy = true;
   let up = 0, changed = 0, expired = false;
   try {
-    for (const f of finds.filter(x => x.inatQueued && !(x.inat && x.inat.id) && x.lat != null && !x.sample && !x.sharedFrom)) {
+    const dupIds = lsGet("inatDups", {});
+    for (const f of finds.filter(x => x.inatQueued && !(x.inat && x.inat.id) && !dupIds[x.id] && x.lat != null && !x.sample && !x.sharedFrom)) {
       try { const id = await inatUpload(f); f.inat = { id, url: `${INAT}/observations/${id}`, uploadedAt: Date.now(), quality: "needs_id" }; delete f.inatQueued; await store.put("finds", f); up++; }
       catch (e) { if (e.message === "token_expired") { expired = true; break; } }
     }
@@ -3392,7 +3490,7 @@ async function renderSettings() {
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
         <label class="switch" for="inatAuto"><span>Send new finds automatically</span><input type="checkbox" id="inatAuto" ${lsGet("inatAuto", true) ? "checked" : ""}></label>
         <div class="field"><label for="inatGeo">Location shown publicly</label><select id="inatGeo"><option value="obscured">Blurred to about 20 km (recommended)</option><option value="private">Hidden completely</option><option value="open">Exact spot</option></select><span class="hint">Experts still see the region, which helps them identify it.</span></div>
-        <div class="btn-row"><button class="btn small" type="button" id="inatNow">Upload and check now</button><button class="btn small ghost" type="button" id="inatOut">Disconnect</button></div>`
+        <div class="btn-row"><a class="btn small plant" href="#inat-past">Upload past finds${finds.filter(f => inatState(f) === "unsent").length ? ` (${finds.filter(f => inatState(f) === "unsent").length})` : ""}</a><button class="btn small" type="button" id="inatNow">Upload and check now</button><button class="btn small ghost" type="button" id="inatOut">Disconnect</button></div>`
       : `<p>Upload finds so experts on iNaturalist can confirm what they are. Their IDs come back into your log. You need a free iNaturalist account.</p>`}
       <details ${inat.connected() && !lsGet("inatExpired", false) ? "" : "open"}><summary style="cursor:pointer;font-weight:700">${inat.connected() ? "Reconnect" : "Connect"}</summary>
         <p><b>Option 1, stay signed in:</b> create an app at <a href="https://www.inaturalist.org/oauth/applications/new" target="_blank" rel="noopener" style="color:var(--plant)">inaturalist.org/oauth/applications/new</a>. Tick "Confidential: no", and set the Redirect URI to <code style="overflow-wrap:anywhere">${esc(redirectURI())}</code>. Paste its Application ID here, then tap Sign in.</p>
