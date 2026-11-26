@@ -2043,7 +2043,10 @@ async function renderMap() {
    In season: edibles likely to be found in an area in a given month.
    Bundled months work offline; iNaturalist records refine them online.
    ============================================================ */
-let edView = { month: new Date().getMonth() + 1, kind: lsGet("edKind", "all"), q: "", place: lsGet("edPlace", null) };   // place: {name, lat, lng, placeId?}
+let edView = { month: new Date().getMonth() + 1, kind: lsGet("edKind", "all"), q: "", place: lsGet("edPlace", null), radius: lsGet("edRadius", 50), useArea: lsGet("edUseArea", true) };
+const ED_RADII = [10, 25, 50, 100, 150];
+// A searched place uses its own boundary unless a radius is picked; "Near you" always uses a radius.
+function edUsesBoundary(place) { return !!(place && place.placeId && edView.useArea); }   // place: {name, lat, lng, placeId?}
 const MONTHS3 = MONTHS.map(m => m.slice(0, 3));
 function regionFor(lng) { return lng != null && lng < -30 ? "na" : "eu"; }
 async function inatPublic(path) {
@@ -2051,31 +2054,34 @@ async function inatPublic(path) {
   if (!r.ok) throw new Error("inat " + r.status);
   return r.json();
 }
+// Each entry: {id, photo, big, attr, url} from iNaturalist, or null when not found.
 async function taxonIds(list) {
-  const cache = lsGet("taxa", {});
+  const cache = lsGet("taxa2", {});
   for (const e of list) {
     if (cache[e.latin] !== undefined) continue;
     try {
       const j = await inatPublic(`/taxa?q=${encodeURIComponent(e.latin)}&is_active=true&per_page=5`);
       const hit = (j.results || []).find(t => t.name.toLowerCase() === e.latin.toLowerCase()) || (j.results || [])[0];
-      cache[e.latin] = hit ? hit.id : null;
-      lsSet("taxa", cache);
+      const ph = hit && hit.default_photo;
+      cache[e.latin] = hit ? { id: hit.id, photo: ph ? ph.square_url.replace("/square.", "/small.") : null, big: ph ? ph.medium_url : null, attr: ph ? ph.attribution : "", url: `https://www.inaturalist.org/taxa/${hit.id}` } : null;
+      lsSet("taxa2", cache);
     } catch (err) { break; }
     await new Promise(r => setTimeout(r, 250));
   }
   return cache;
 }
 async function areaCounts(place, onProgress) {
-  const key = place.placeId ? "p" + place.placeId : `${place.lat.toFixed(1)},${place.lng.toFixed(1)}`;
+  const boundary = edUsesBoundary(place);
+  const key = boundary ? "p" + place.placeId : `${place.lat.toFixed(1)},${place.lng.toFixed(1)},r${edView.radius}`;
   const all = lsGet("edCounts", {});
   if (all[key] && Date.now() - all[key].ts < 14 * DAY) return all[key].counts;
   onProgress && onProgress("Looking up species on iNaturalist…");
   const ids = await taxonIds(EDIBLES);
   const byId = {};
-  EDIBLES.forEach(e => { if (ids[e.latin]) byId[ids[e.latin]] = e.id; });
+  EDIBLES.forEach(e => { const t = ids[e.latin]; if (t && t.id) byId[t.id] = e.id; });
   const idList = Object.keys(byId);
   if (!idList.length) throw new Error("no taxa");
-  const where = place.placeId ? `place_id=${place.placeId}` : `lat=${place.lat.toFixed(3)}&lng=${place.lng.toFixed(3)}&radius=60`;
+  const where = boundary ? `place_id=${place.placeId}` : `lat=${place.lat.toFixed(3)}&lng=${place.lng.toFixed(3)}&radius=${edView.radius}`;
   const counts = {};
   EDIBLES.forEach(e => counts[e.id] = Array(12).fill(0));
   for (let m = 1; m <= 12; m++) {
@@ -2139,14 +2145,18 @@ async function renderEdibles() {
         ${edView.place ? `<button class="btn small ghost" type="button" id="edNear"><svg><use href="#i-gps"/></svg>Near me</button>` : ""}</div>
       <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edSearch" placeholder="Search another area, e.g. Algonquin Park" autocomplete="off" aria-label="Search for an area"></div>
       <div id="edResults" class="settings-list"></div>
+      ${place ? `<div><span class="eyebrow">Search radius</span><div class="chips" id="edRadius" role="group" aria-label="Search radius" style="margin-top:6px">${place.placeId ? `<button type="button" class="chip" data-r="area" aria-pressed="${edUsesBoundary(place)}">Whole area</button>` : ""}${ED_RADII.map(r => `<button type="button" class="chip" data-r="${r}" aria-pressed="${!edUsesBoundary(place) && edView.radius === r}">${r} km</button>`).join("")}</div></div>` : ""}
     </div>
     <div class="chips" id="edMonths" role="group" aria-label="Month" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${MONTHS3.map((m, i) => `<button type="button" class="chip" data-m="${i + 1}" aria-pressed="${edView.month === i + 1}" style="flex:none">${m}</button>`).join("")}</div>
     <div class="seg" role="group" aria-label="Show" id="edKind">${[["all", "All"], ["mushroom", "Mushrooms"], ["plant", "Plants"]].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${edView.kind === v}">${l}</button>`).join("")}</div>
     <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edFilter" placeholder="Filter species" value="${esc(edView.q)}" autocomplete="off" aria-label="Filter species"></div>
+    <div id="edNoData"></div>
     <div class="context-note" id="edStatus"></div>
     <div class="list" id="edList" style="grid-template-columns:1fr"></div>
   </div>`;
-  let counts = null, wx = null;
+  let counts = null, wx = null, noData = false, taxa = lsGet("taxa2", {});
+  const scope = () => edUsesBoundary(place) ? `in ${place.name}` : `within ${edView.radius} km`;
+  const biggerHint = () => edUsesBoundary(place) ? "Try a radius instead of the area boundary." : edView.radius < 150 ? "Try a bigger radius." : "";
   const draw = () => {
     const region = regionFor(place ? place.lng : null);
     const m = edView.month, nowM = new Date().getMonth() + 1;
@@ -2176,11 +2186,13 @@ async function renderEdibles() {
       return `<div class="panel" style="gap:8px">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><b style="font-family:var(--font-display);font-size:19px">${esc(e.name)}</b><div class="hint"><i>${esc(e.latin)}</i> · <span class="dot ${e.kind}"></span> ${e.kind === "plant" ? "Plant" : "Mushroom"}</div></div>
           ${favoured(e) ? `<span class="edib edible" style="flex:none">Weather favours it</span>` : ""}</div>
+        ${(() => { const t = taxa[e.latin]; return t && t.photo ? `<figure style="margin:0"><a href="${esc(t.url)}" target="_blank" rel="noopener"><img src="${esc(t.big || t.photo)}" alt="${esc(e.name)}" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:var(--r-md);background:var(--surface-2);display:block" onerror="this.closest('figure').remove()"></a><figcaption class="hint" style="font-size:11px;margin-top:4px">${esc(t.attr)}, via iNaturalist. A typical example: yours may look different.</figcaption></figure>` : ""; })()}
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px">${bars}</div>
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map((x, i) => `<span style="${i + 1 === m ? "color:var(--fg);font-weight:700" : ""}">${x[0]}</span>`).join("")}</div>
         ${summary ? `<p class="hint" style="margin:0;color:var(--fg)">${summary}</p>` : ""}
-        <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} here in ${MONTHS[m - 1]}, ${tot} all year.` : "No confirmed iNaturalist records in this area.") : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
-        <p style="margin:0">${esc(e.where)}</p>
+        <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} ${scope()} in ${MONTHS[m - 1]}, ${tot} all year.` : `No iNaturalist data for this one ${scope()}. ${biggerHint()}`) : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
+        ${EDIBLE_ID[e.id] ? `<div><b>How to identify</b><ul style="margin:4px 0 0;padding-left:20px;display:grid;gap:3px">${EDIBLE_ID[e.id].map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+        <p style="margin:0"><b>Where:</b> ${esc(e.where)}</p>
         <p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p>
       </div>`;
     };
@@ -2190,7 +2202,13 @@ async function renderEdibles() {
       + (rest.length ? `<details class="panel"><summary style="cursor:pointer;font-weight:700">Not usually found in ${MONTHS[m - 1]} (${rest.length})</summary><div class="settings-list" style="margin-top:10px">${rest.map(card).join("")}</div></details>` : "");
     let st = "";
     if (wx && m === nowM) st = `Last 7 days here: ${wx.rain} mm of rain, average ${wx.temp} °C. "Weather favours it" means rain and temperature suit that mushroom right now. `;
-    st += counts ? "Months are from confirmed iNaturalist records within about 60 km." : `Months are a general guide for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.${navigator.onLine && place ? "" : " Connect to see local records from iNaturalist."}`;
+    const nd = $("#edNoData");
+    if (nd) {
+      const next = edUsesBoundary(place) ? null : ED_RADII.find(r => r > edView.radius);
+      nd.innerHTML = noData ? `<div class="banner"><svg><use href="#i-warn"/></svg><div class="grow"><b>No iNaturalist data exists here ${scope()}.</b> ${biggerHint()} Until then, the months below are the general guide.</div>${next ? `<button type="button" class="btn small" data-r="${next}">Try ${next} km</button>` : ""}</div>` : "";
+      const nb = nd.querySelector("button"); if (nb) nb.addEventListener("click", () => { edView.useArea = false; edView.radius = +nb.dataset.r; lsSet("edRadius", edView.radius); lsSet("edUseArea", false); renderEdibles(); });
+    }
+    st += counts ? `Months are from confirmed iNaturalist records ${scope()}.` : noData ? "" : `Months are a general guide for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.${navigator.onLine && place ? "" : " Connect to see local records from iNaturalist."}`;
     $("#edStatus").textContent = st;
   };
   draw();
@@ -2198,6 +2216,10 @@ async function renderEdibles() {
   $$("#edKind button").forEach(b => b.addEventListener("click", () => { edView.kind = b.dataset.v; lsSet("edKind", edView.kind); $$("#edKind button").forEach(x => x.setAttribute("aria-pressed", x === b)); draw(); }));
   $("#edFilter").addEventListener("input", e => { edView.q = e.target.value.trim(); draw(); });
   const cur = $(`#edMonths .chip[data-m="${edView.month}"]`); if (cur) cur.scrollIntoView({ block: "nearest", inline: "center" });
+  $$("#edRadius .chip").forEach(b => b.addEventListener("click", () => {
+    if (b.dataset.r === "area") { edView.useArea = true; } else { edView.useArea = false; edView.radius = +b.dataset.r; lsSet("edRadius", edView.radius); }
+    lsSet("edUseArea", edView.useArea); renderEdibles();
+  }));
   const nearBtn = $("#edNear");
   if (nearBtn) nearBtn.addEventListener("click", async () => { edView.place = null; lsSet("edPlace", null); try { await getPosition(); } catch (e) {} renderEdibles(); });
   // Area search, through iNaturalist places.
@@ -2215,16 +2237,17 @@ async function renderEdibles() {
         $$("#edResults [data-i]").forEach(b => b.addEventListener("click", () => {
           const r = res[+b.dataset.i], [la, ln] = r.location.split(",").map(Number);
           edView.place = { name: r.display_name || r.name, lat: la, lng: ln, placeId: r.id };
-          lsSet("edPlace", edView.place); renderEdibles();
+          lsSet("edPlace", edView.place); edView.useArea = true; lsSet("edUseArea", true); renderEdibles();
         }));
       } catch (err) { $("#edResults").innerHTML = `<p class="hint">Couldn't reach iNaturalist.</p>`; }
     }, 350);
   });
   if (!place && geoAvailable()) { getPosition().then(() => { if (location.hash === "#edibles") renderEdibles(); }).catch(() => {}); }
+  if (navigator.onLine && EDIBLES.some(e => taxa[e.latin] === undefined)) taxonIds(EDIBLES).then(t => { taxa = t; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
   if (place && navigator.onLine) {
     areaWeather(place).then(w => { wx = w; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
     areaCounts(place, msg => { const s = $("#edStatus"); if (s) s.textContent = msg; })
-      .then(c => { counts = c; if (document.body.contains($("#edList"))) draw(); })
+      .then(c => { const tot = Object.values(c).reduce((a, arr) => a + arr.reduce((x, y) => x + y, 0), 0); if (tot) counts = c; else noData = true; if (document.body.contains($("#edList"))) draw(); })
       .catch(() => { const s = $("#edStatus"); if (s) { draw(); s.textContent += " Couldn't load local records from iNaturalist."; } });
   }
 }
