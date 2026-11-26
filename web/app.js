@@ -2112,6 +2112,21 @@ function edPlace() {
   if (lastLoc) return { name: "Near you", lat: lastLoc.lat, lng: lastLoc.lng, near: true };
   return null;
 }
+const ED_LEVELS = ["No records", "Possible", "Common", "Peak"];
+function edLevel(v) { return v >= 0.6 ? 3 : v >= 0.25 ? 2 : v > 0 ? 1 : 0; }
+function edSwatch(L, col) { return [ "var(--surface-2)", `color-mix(in srgb, ${col} 35%, var(--surface))`, `color-mix(in srgb, ${col} 65%, var(--surface))`, col ][L]; }
+function monthRanges(idx) {
+  if (!idx.length) return "";
+  if (idx.length === 12) return "all year";
+  const set = new Set(idx), out = [];
+  // Start a run at a month whose previous month is not in the set, so runs can wrap Dec to Jan.
+  for (const i of idx) {
+    if (set.has((i + 11) % 12)) continue;
+    let j = i; while (set.has((j + 1) % 12)) j = (j + 1) % 12;
+    out.push(i === j ? MONTHS3[i] : `${MONTHS3[i]}–${MONTHS3[j]}`);
+  }
+  return out.join(", ");
+}
 async function renderEdibles() {
   setChrome({ title: "In season", tab: "edibles" });
   const place = edPlace();
@@ -2145,23 +2160,31 @@ async function renderEdibles() {
     const card = ({ e, s }) => {
       const c = counts && counts[e.id];
       const mx = c ? Math.max(1, ...c) : 1;
+      const col = e.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
+      const lv = MONTHS3.map((mm, i) => c ? edLevel(c[i] / mx) : ((e[region] || []).includes(i + 1) ? 3 : 0));
       const bars = MONTHS3.map((mm, i) => {
-        const v = c ? c[i] / mx : ((e[region] || []).includes(i + 1) ? 1 : 0);
-        const col = e.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
-        return `<span title="${mm}${c ? ": " + c[i] + " records" : ""}" style="display:block;height:22px;border-radius:3px;background:${v ? `color-mix(in srgb, ${col} ${Math.round(30 + 70 * v)}%, var(--surface))` : "var(--surface-2)"};${i + 1 === m ? "outline:2px solid var(--fg);outline-offset:1px" : ""}"></span>`;
+        const L = lv[i];
+        const name = c ? ED_LEVELS[L] : (L ? "Typical season" : "Not usual");
+        return `<span title="${MONTHS[i]}: ${name}${c ? " (" + c[i] + " records)" : ""}" style="display:flex;align-items:flex-end;height:26px;${i + 1 === m ? "outline:2px solid var(--fg);outline-offset:2px;border-radius:3px" : ""}"><span style="display:block;width:100%;height:${[4, 9, 17, 26][L]}px;border-radius:3px;background:${edSwatch(L, col)}"></span></span>`;
       }).join("");
+      const summary = c
+        ? [[3, "Peak"], [2, "Common"], [1, "Possible"]].map(([L, n]) => { const r = monthRanges(lv.map((x, i) => x === L ? i : -1).filter(i => i >= 0)); return r ? `<b>${n}:</b> ${r}` : ""; }).filter(Boolean).join(" · ")
+        : (() => { const r = monthRanges(lv.map((x, i) => x ? i : -1).filter(i => i >= 0)); return r ? `<b>Typical season:</b> ${r}` : ""; })();
       const tot = c ? c.reduce((x, y) => x + y, 0) : null;
       return `<div class="panel" style="gap:8px">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><b style="font-family:var(--font-display);font-size:19px">${esc(e.name)}</b><div class="hint"><i>${esc(e.latin)}</i> · <span class="dot ${e.kind}"></span> ${e.kind === "plant" ? "Plant" : "Mushroom"}</div></div>
           ${favoured(e) ? `<span class="edib edible" style="flex:none">Weather favours it</span>` : ""}</div>
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px">${bars}</div>
-        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map(x => `<span>${x[0]}</span>`).join("")}</div>
+        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map((x, i) => `<span style="${i + 1 === m ? "color:var(--fg);font-weight:700" : ""}">${x[0]}</span>`).join("")}</div>
+        ${summary ? `<p class="hint" style="margin:0;color:var(--fg)">${summary}</p>` : ""}
         <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} here in ${MONTHS[m - 1]}, ${tot} all year.` : "No confirmed iNaturalist records in this area.") : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
         <p style="margin:0">${esc(e.where)}</p>
         <p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p>
       </div>`;
     };
-    $("#edList").innerHTML = (inS.length ? `<h3 style="font-size:18px">Likely in ${MONTHS[m - 1]}</h3>` + inS.map(card).join("") : `<p class="hint">Nothing on this list is usually found here in ${MONTHS[m - 1]}.</p>`)
+    const legCol = edView.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
+    const legend = `<div class="panel" style="gap:6px;padding:12px 14px"><b>How to read the month bars</b><div style="display:flex;flex-wrap:wrap;gap:10px 16px;font-size:13px">${(counts ? [[3, "Peak: its busiest months here"], [2, "Common"], [1, "Possible, but few records"], [0, "No records"]] : [[3, "Typical season"], [0, "Not usual"]]).map(([L, n]) => `<span style="display:inline-flex;align-items:flex-end;gap:6px"><span style="display:inline-block;width:12px;height:${[4, 9, 17, 22][L]}px;border-radius:2px;background:${edSwatch(L, legCol)}"></span>${n}</span>`).join("")}</div><span class="hint">Taller and brighter means more likely. The outlined month is the one you picked.</span></div>`;
+    $("#edList").innerHTML = legend + (inS.length ? `<h3 style="font-size:18px">Likely in ${MONTHS[m - 1]}</h3>` + inS.map(card).join("") : `<p class="hint">Nothing on this list is usually found here in ${MONTHS[m - 1]}.</p>`)
       + (rest.length ? `<details class="panel"><summary style="cursor:pointer;font-weight:700">Not usually found in ${MONTHS[m - 1]} (${rest.length})</summary><div class="settings-list" style="margin-top:10px">${rest.map(card).join("")}</div></details>` : "");
     let st = "";
     if (wx && m === nowM) st = `Last 7 days here: ${wx.rain} mm of rain, average ${wx.temp} °C. "Weather favours it" means rain and temperature suit that mushroom right now. `;
