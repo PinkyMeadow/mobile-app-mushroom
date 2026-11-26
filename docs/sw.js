@@ -1,5 +1,5 @@
 // Caches the app shell so it opens with no signal. Map tiles are stored by the app itself.
-const CACHE = "spore-leaf-v8";
+const CACHE = "spore-leaf-v9";
 const PHOTOS = "ed-photos";
 const SHELL = ["./", "index.html", "app.js", "edibles.js", "vendor/leaflet.js", "vendor/leaflet.css", "vendor/leaflet-heat.js", "manifest.webmanifest", "icon.svg"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });

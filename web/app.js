@@ -55,12 +55,18 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DAY = 86400000;
-function toast(msg) {
+function toast(msg, action) {
   $$(".toast").forEach(t => t.remove());
   const t = document.createElement("div");
   t.className = "toast"; t.textContent = msg; t.setAttribute("role", "status");
+  if (action) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = action.label;
+    b.style.cssText = "margin-left:14px;background:none;border:0;color:var(--shroom-ink);font:inherit;font-weight:800;text-decoration:underline;cursor:pointer;padding:6px 0";
+    b.addEventListener("click", () => { t.remove(); action.run(); });
+    t.appendChild(b); t.style.pointerEvents = "auto";
+  }
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), action ? 7000 : 2600);
 }
 function timeOfDay(d) {
   const h = d.getHours();
@@ -176,13 +182,31 @@ const RAIN_RECENT = ["Dry for days","Light rain recently","Heavy rain recently",
 /* ============================================================
    State
    ============================================================ */
-let settings = { units: lsGet("units", "cm"), field: lsGet("field", false) };
+let settings = { units: lsGet("units", "cm"), field: lsGet("field", false), camp: lsGet("camp", false), night: lsGet("night", false) };
+// Camping mode keeps the radio quiet: nothing goes online until it's turned off.
+const netOK = () => navigator.onLine && !settings.camp;
+function applyModes() {
+  document.body.classList.toggle("camp", !!settings.camp);
+  document.body.classList.toggle("night", !!settings.night);
+  const nb = document.getElementById("nightBtn"); if (nb) nb.setAttribute("aria-pressed", !!settings.night);
+  const nm = document.getElementById("nightMode"); if (nm) nm.checked = !!settings.night;
+}
 let lastLoc = lsGet("lastLoc", null);  // {lat,lng,acc,ts}
 let finds = [];
 const photoURLs = new Map();
-let view = { filter: lsGet("filter", "all"), sort: lsGet("sort", "newest"), q: "", tag: null };
+let view = { filter: lsGet("filter", "all"), sort: lsGet("sort", "newest"), q: "", quick: lsGet("quick", []), trip: null };
+const QUICK = [
+  ["edible", "Edible", f => f.edibility === "edible"],
+  ["revisit", "Revisit", f => f.revisit],
+  ["month", "This month", f => new Date(f.foundAt).getMonth() === new Date().getMonth()],
+  ["near", "Within 5 km", f => lastLoc && f.lat != null && haversine(lastLoc, f) <= 5],
+  ["photo", "Has photos", f => f.photos.length > 0],
+  ["confirmed", "iNat confirmed", f => f.inat && f.inat.quality === "research"]
+];
 let maps = [];
 document.body.classList.toggle("field", !!settings.field);
+applyModes();
+document.getElementById("nightBtn").addEventListener("click", () => { settings.night = !settings.night; lsSet("night", settings.night); applyModes(); });
 
 /* Older entries stored a single photo key. */
 function normalise(f) {
@@ -198,7 +222,23 @@ function normalise(f) {
   return f;
 }
 const cover = f => f.photos && f.photos[0] ? f.photos[0].key : null;
-async function loadFinds() { finds = ((await store.all("finds").catch(() => [])) || []).map(normalise); }
+let trash = [];
+async function loadFinds() {
+  const all = ((await store.all("finds").catch(() => [])) || []).map(normalise);
+  // Finds in the trash for over 30 days are deleted for good.
+  for (const f of all.filter(x => x.deletedAt && Date.now() - x.deletedAt > 30 * DAY)) await purgeFind(f);
+  finds = all.filter(f => !f.deletedAt);
+  trash = all.filter(f => f.deletedAt && Date.now() - f.deletedAt <= 30 * DAY).sort((a, b) => b.deletedAt - a.deletedAt);
+}
+async function purgeFind(f) {
+  await store.del("finds", f.id);
+  for (const p of [...(f.photos || []), ...(f.voice || [])]) { await store.del("photos", p.key).catch(() => {}); photoURLs.delete(p.key); }
+}
+async function trashFind(f, after) {
+  f.deletedAt = Date.now(); await store.put("finds", f); await loadFinds();
+  toast("Moved to the trash", { label: "Undo", run: async () => { delete f.deletedAt; await store.put("finds", f); await loadFinds(); toast("Find restored"); location.hash = "find-" + f.id; route(); } });
+  after && after();
+}
 async function photoURL(key) {
   if (!key) return null;
   if (photoURLs.has(key)) return photoURLs.get(key);
@@ -221,13 +261,15 @@ function getPosition(timeout = 12000) {
         const loc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy), alt: p.coords.altitude != null ? Math.round(p.coords.altitude) : null, ts: Date.now() };
         lastLoc = loc; lsSet("lastLoc", loc);
         res(loc);
-      }, e => rej(e), { enableHighAccuracy: true, timeout, maximumAge: 30000 });
+      }, e => rej(e), { enableHighAccuracy: true, timeout, maximumAge: settings.camp ? 120000 : 30000 });
     } catch (e) { rej(e); }
   });
 }
 
-/* Read GPS from a JPEG's EXIF block, when the camera kept it. */
-async function exifGPS(file) {
+/* Read GPS and the date taken from a JPEG's EXIF block, when the camera kept them. */
+async function exifGPS(file) { return (await exifRead(file)).gps; }
+async function exifRead(file) {
+  const out = { gps: null, date: null };
   try {
     const buf = await file.slice(0, 256 * 1024).arrayBuffer();
     const v = new DataView(buf);
@@ -239,28 +281,33 @@ async function exifGPS(file) {
         const tiff = off + 10, le = v.getUint16(tiff) === 0x4949;
         const u16 = o => v.getUint16(o, le), u32 = o => v.getUint32(o, le);
         const ifd0 = tiff + u32(tiff + 4);
-        let gpsOff = null;
-        for (let i = 0, n = u16(ifd0); i < n; i++) { const e = ifd0 + 2 + i * 12; if (u16(e) === 0x8825) gpsOff = tiff + u32(e + 8); }
-        if (!gpsOff) return null;
+        let gpsOff = null, exifOff = null, dt0 = null;
+        const str = (e) => { const cnt = u32(e + 4), p = cnt > 4 ? tiff + u32(e + 8) : e + 8; let t = ""; for (let k = 0; k < cnt - 1 && p + k < v.byteLength; k++) t += String.fromCharCode(v.getUint8(p + k)); return t; };
+        const toDate = t => { const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(t || ""); return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null; };
+        for (let i = 0, n = u16(ifd0); i < n; i++) { const e = ifd0 + 2 + i * 12, tg = u16(e); if (tg === 0x8825) gpsOff = tiff + u32(e + 8); if (tg === 0x8769) exifOff = tiff + u32(e + 8); if (tg === 0x0132) dt0 = str(e); }
+        if (exifOff) for (let i = 0, n = u16(exifOff); i < n; i++) { const e = exifOff + 2 + i * 12; if (u16(e) === 0x9003) out.date = toDate(str(e)); }
+        if (!out.date) out.date = toDate(dt0);
+        if (out.date && isNaN(out.date)) out.date = null;
+        if (!gpsOff) return out;
         const tags = {};
         for (let i = 0, n = u16(gpsOff); i < n; i++) {
           const e = gpsOff + 2 + i * 12, tag = u16(e), type = u16(e + 2);
           if (type === 2) tags[tag] = String.fromCharCode(v.getUint8(e + 8));
           else if (type === 5) { const p = tiff + u32(e + 8), r = []; for (let k = 0; k < 3; k++) r.push(u32(p + k * 8) / (u32(p + k * 8 + 4) || 1)); tags[tag] = r; }
         }
-        if (!tags[2] || !tags[4]) return null;
+        if (!tags[2] || !tags[4]) return out;
         const dms = a => a[0] + a[1] / 60 + a[2] / 3600;
         let lat = dms(tags[2]), lng = dms(tags[4]);
         if (tags[1] === "S") lat = -lat;
         if (tags[3] === "W") lng = -lng;
-        if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return null;
-        return { lat, lng };
+        if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return out;
+        out.gps = { lat, lng }; return out;
       }
       if ((marker & 0xFF00) !== 0xFF00) break;
       off += 2 + len;
     }
   } catch (e) {}
-  return null;
+  return out;
 }
 
 function resizeImage(file, max = 1600, q = 0.85) {
@@ -378,7 +425,7 @@ const OfflineTiles = hasLeaflet ? L.TileLayer.extend({
     const img = document.createElement("img");
     img.alt = ""; img.setAttribute("role", "presentation");
     const key = `${lay.prefix}${coords.z}/${coords.x}/${coords.y}`;
-    const net = () => { img.onload = () => done(null, img); img.onerror = () => done(new Error("tile"), img); img.src = lay.url(coords.z, coords.x, coords.y); };
+    const net = () => { if (settings.camp) { done(new Error("camping mode"), img); return; } img.onload = () => done(null, img); img.onerror = () => done(new Error("tile"), img); img.src = lay.url(coords.z, coords.x, coords.y); };
     store.get("tiles", key).then(blob => {
       if (!blob) return net();
       const u = URL.createObjectURL(blob);
@@ -404,7 +451,7 @@ function makeMap(el, center, zoom, opts = {}) {
   m.on("overlayadd overlayremove", e => { if (e.layer === hike) lsSet("mapHike", e.type === "overlayadd"); });
   m.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
   maps.push(m);
-  setTimeout(() => m.invalidateSize(), 60);
+  setTimeout(() => { if (maps.includes(m) && document.body.contains(el)) m.invalidateSize(); }, 60);
   return m;
 }
 const pinIcon = kind => L.divIcon({ className: "", html: `<div class="pin ${kind}"></div>`, iconSize: [22, 22], iconAnchor: kind === "me" ? [8, 8] : [11, 22] });
@@ -539,6 +586,11 @@ async function route() {
   if (h.startsWith("edit-")) return renderForm(h.slice(5));
   if (h.startsWith("find-")) return renderDetail(h.slice(5));
   if (h === "species") return renderSpeciesList();
+  if (h === "review") return renderReview();
+  if (h === "trash") return renderTrash();
+  if (h === "trips") return renderTrips();
+  if (h.startsWith("trip-")) return renderTrip(h.slice(5));
+  if (h === "import") return renderImport();
   if (h.startsWith("species-")) return renderSpecies(decodeURIComponent(h.slice(8)));
   if (h === "map") return renderMap();
   if (h === "season") return renderSeason();
@@ -558,7 +610,9 @@ async function quickLog(file) {
     const exif = await exifGPS(file);
     const blob = await resizeImage(file);
     let loc = null, src = null;
-    try { loc = await getPosition(8000); src = "gps"; } catch (e) { if (exif) { loc = { ...exif, acc: null }; src = "photo"; } }
+    // Use the photo's own location when it has one, so GPS doesn't need to wake up.
+    if (exif) { loc = { ...exif, acc: null }; src = "photo"; }
+    else { try { loc = await getPosition(8000); src = "gps"; } catch (e) {} }
     const key = "p-" + uid(), nowISO = new Date().toISOString();
     await store.put("photos", blob, key);
     const f = normalise({
@@ -568,13 +622,14 @@ async function quickLog(file) {
       width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "",
       weather: [], rainRecent: "", temp: null, weatherNote: ""
     });
+    if (activeTripId()) f.tripId = activeTripId();
     await store.put("finds", f);
     if (finds.some(x => x.sample)) await removeExamples();
     await loadFinds();
     toast(loc ? "Saved with location. Add details later." : "Saved. No location yet, so pin it when you add details.");
     renderLog();
     // Fill weather quietly if there's signal.
-    if (loc && navigator.onLine) fetchWeather(loc.lat, loc.lng, f.foundAt).then(async w => {
+    if (loc && netOK()) fetchWeather(loc.lat, loc.lng, f.foundAt).then(async w => {
       const cur = finds.find(x => x.id === f.id); if (!cur || cur.weather.length) return;
       Object.assign(cur, { weather: w.chips, temp: w.temp, rainRecent: w.rainRecent, weatherNote: w.note, soil: w.soil, soilVwc: w.soilVwc, soilAuto: !!w.soil, wxAuto: true });
       try { Object.assign(cur, await fetchTerrain(loc.lat, loc.lng)); } catch (e) {}
@@ -589,7 +644,8 @@ async function quickLog(file) {
 function matches(f) {
   if (view.filter === "todo") { if (!f.needsDetails) return false; }
   else if (view.filter !== "all" && f.type !== view.filter) return false;
-  if (view.tag && !f.tags.includes(view.tag)) return false;
+  for (const q of view.quick) { const d = QUICK.find(x => x[0] === q); if (d && !d[2](f)) return false; }
+  if (view.trip && f.tripId !== view.trip) return false;
   if (view.q) {
     const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
     return view.q.toLowerCase().split(/\s+/).every(w => hay.includes(w.replace(/^#/, "")));
@@ -638,11 +694,14 @@ function renderLog() {
     <label class="quick" for="quickIn"><span class="qi"><svg><use href="#i-bolt"/></svg></span><span><b>Quick log</b><span>One tap: photo, location and time saved now. Add the details later.</span></span></label>
     <input class="sr" type="file" id="quickIn" accept="image/*" capture="environment">
     ${canRecord() ? `<button type="button" class="quick" id="voiceQuick" style="text-align:left;color:inherit;font:inherit"><span class="qi" style="background:var(--plant);color:var(--plant-ink)"><svg><use href="#i-mic"/></svg></span><span><b>Voice log</b><span>Hands-free: say what you found. Location and time are saved too.</span></span></button>` : ""}
+    ${finds.some(f => f.idReview) ? `<a class="banner" href="#review" style="text-decoration:none;color:var(--fg)"><svg style="color:var(--plant)"><use href="#i-edit"/></svg><div class="grow"><b>${finds.filter(f => f.idReview).length} ID ${finds.filter(f => f.idReview).length === 1 ? "change" : "changes"} to review</b> from iNaturalist. Nothing changes until you choose.</div></a>` : ""}
+    ${activeTripId() && tripById(activeTripId()) ? `<a class="banner" href="#trip-${esc(activeTripId())}" style="text-decoration:none;color:var(--fg)"><svg style="color:var(--shroom)"><use href="#i-map"/></svg><div class="grow"><b>On a trip: ${esc(tripById(activeTripId()).name)}.</b> New finds are added to it.</div></a>` : `<a href="#trips" class="hint" style="color:var(--plant);font-weight:700;text-decoration:none">Start a trip ›</a>`}
+    ${settings.camp ? `<a class="banner warn" href="#more" style="text-decoration:none;color:inherit"><svg><use href="#i-bolt"/></svg><div class="grow"><b>Camping mode is on.</b> Nothing goes online, to save battery.</div></a>` : ""}
     <div id="fruitBanner"></div>
     <div class="toolbar">
-      <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="q" placeholder="Search names, notes and #tags" value="${esc(view.q)}" autocomplete="off" enterkeyhint="search" aria-label="Search finds"></div>
+      <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="q" placeholder="Search names and notes" value="${esc(view.q)}" autocomplete="off" enterkeyhint="search" aria-label="Search finds"></div>
       <div class="seg" role="group" aria-label="Show" id="filterSeg"></div>
-      <div class="chips" id="tagRow"></div>
+      <div class="chips" id="quickRow" role="group" aria-label="Quick filters"></div>
       <div class="sortrow"><label for="sortSel">Sort</label>
         <select id="sortSel">
           <option value="newest">Newest first, by month</option>
@@ -681,12 +740,20 @@ function renderResults() {
   $("#filterSeg").innerHTML = segs.map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${view.filter === v}">${l} <span class="num" style="opacity:.7">${counts[v]}</span></button>`).join("");
   $$("#filterSeg button").forEach(b => b.addEventListener("click", () => { view.filter = b.dataset.v; lsSet("filter", view.filter); renderResults(); }));
 
-  const tagCounts = {};
-  finds.forEach(f => f.tags.forEach(t => tagCounts[t] = (tagCounts[t] || 0) + 1));
-  const tags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 12);
-  $("#tagRow").innerHTML = tags.map(([t]) => `<button type="button" class="tag" data-t="${esc(t)}" aria-pressed="${view.tag === t}">#${esc(t)}</button>`).join("");
-  $("#tagRow").hidden = !tags.length;
-  $$("#tagRow .tag").forEach(b => b.addEventListener("click", () => { view.tag = view.tag === b.dataset.t ? null : b.dataset.t; renderResults(); }));
+  const trips = tripList();
+  if (view.trip && !trips.some(t => t.id === view.trip)) view.trip = null;
+  $("#quickRow").innerHTML = QUICK.map(([k, l]) => `<button type="button" class="chip" data-q="${k}" aria-pressed="${view.quick.includes(k)}">${l}</button>`).join("")
+    + (trips.length ? `<select id="tripSel" aria-label="Trip" style="min-height:36px;border-radius:999px;padding:0 12px"><option value="">Any trip</option>${trips.map(t => `<option value="${esc(t.id)}" ${view.trip === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>` : "")
+    + (view.quick.length || view.trip ? `<button type="button" class="chip" id="qClear">Clear</button>` : "");
+  $$("#quickRow [data-q]").forEach(b => b.addEventListener("click", async () => {
+    const k = b.dataset.q;
+    view.quick = view.quick.includes(k) ? view.quick.filter(x => x !== k) : [...view.quick, k];
+    lsSet("quick", view.quick);
+    if (k === "near" && view.quick.includes("near") && !lastLoc) { try { await getPosition(); } catch (e) { toast("Location isn't available here"); } }
+    renderResults();
+  }));
+  const ts = $("#tripSel"); if (ts) ts.addEventListener("change", () => { view.trip = ts.value || null; renderResults(); });
+  const qc = $("#qClear"); if (qc) qc.addEventListener("click", () => { view.quick = []; view.trip = null; lsSet("quick", []); renderResults(); });
 
   let note = "";
   if (view.sort === "nearest") note = lastLoc
@@ -730,6 +797,155 @@ const measureVal = cm => cm == null ? "—" : `${toDisp(cm)}<small> ${unitLabel(
 const edibLabel = v => (EDIBILITY.find(e => e[0] === v) || EDIBILITY[0])[1];
 function chipSwatch(name, list) { const s = list.find(x => x[0] === name); return `<span class="chip" style="cursor:default"><span class="sw" style="background:${s ? s[1] : "transparent"}"></span>${esc(name)}</span>`; }
 
+
+/* ============================================================
+   Trips: group finds and hikes from one outing.
+   ============================================================ */
+const tripList = () => lsGet("trips", []).sort((a, b) => b.start - a.start);
+const tripById = id => lsGet("trips", []).find(t => t.id === id) || null;
+const activeTripId = () => lsGet("tripLive", null);
+function saveTrips(list) { lsSet("trips", list); }
+function renderTrips() {
+  setChrome({ title: "Trips", back: true });
+  const list = tripList(), live = activeTripId();
+  const d = new Date();
+  main.innerHTML = `<div class="wrap view">
+    ${live && tripById(live) ? "" : `<div class="panel"><h3>Start a trip</h3><p>Finds and hikes you log until you end it are added to the trip.</p>
+      <div class="field"><label for="tripName">Name</label><input type="text" id="tripName" value="${esc(`Trip, ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`)}"></div>
+      <div class="btn-row"><button class="btn plant" type="button" id="tripGo">Start trip</button></div></div>`}
+    ${list.length ? list.map(t => { const n = finds.filter(f => f.tripId === t.id).length; return `<a class="card" href="#trip-${esc(t.id)}" style="padding:14px"><div class="card-body"><div class="card-title">${esc(t.name)}${t.id === live ? ' <span class="badge-rv">On now</span>' : ""}</div><div class="meta num"><span>${esc(fmtDate(new Date(t.start).toISOString()))}${t.end ? ` to ${esc(fmtDate(new Date(t.end).toISOString()))}` : ""}</span><span class="sep">${n} ${n === 1 ? "find" : "finds"}</span></div></div></a>`; }).join("") : `<p class="hint">No trips yet.</p>`}
+  </div>`;
+  const go = $("#tripGo");
+  if (go) go.addEventListener("click", () => {
+    const t = { id: "trip-" + uid(), name: $("#tripName").value.trim() || "Trip", start: Date.now(), end: null };
+    saveTrips([...lsGet("trips", []), t]); lsSet("tripLive", t.id); toast("Trip started"); location.hash = "trip-" + t.id;
+  });
+}
+async function renderTrip(id) {
+  const t = tripById(id); if (!t) { location.hash = "trips"; return; }
+  setChrome({ title: "Trip", back: true });
+  const list = finds.filter(f => f.tripId === id).sort((a, b) => new Date(b.foundAt) - new Date(a.foundAt));
+  const hikes = ((await store.all("trails").catch(() => [])) || []).filter(h => h.tripId === id || (h.start >= t.start && h.start <= (t.end || Date.now())));
+  const live = activeTripId() === id;
+  const names = [...new Set(list.filter(f => f.name).map(f => f.name))];
+  const km = hikes.reduce((a, h) => a + (h.km || 0), 0), up = hikes.reduce((a, h) => a + (h.up || 0), 0);
+  const loose = finds.filter(f => !f.tripId && new Date(f.foundAt).getTime() >= t.start - 6 * 3600000 && new Date(f.foundAt).getTime() <= (t.end || Date.now()));
+  main.innerHTML = `<div class="wrap view">
+    <div class="detail-head"><h2 id="tripTitle">${esc(t.name)}</h2><div class="meta num"><span>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}${t.end ? ` to ${esc(fmtDate(new Date(t.end).toISOString(), { day: "numeric", month: "short" }))}` : " · on now"}</span></div></div>
+    <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr))">
+      <div class="fact"><span class="eyebrow">Finds</span><span class="v num">${list.length}</span></div>
+      <div class="fact"><span class="eyebrow">Species</span><span class="v num">${names.length}</span></div>
+      <div class="fact"><span class="eyebrow">Hiked</span><span class="v num">${esc(fmtDist(km))}</span></div>
+      <div class="fact"><span class="eyebrow">Climb</span><span class="v num">${esc(fmtElev(up))}</span></div>
+    </div>
+    <div class="btn-row">${live ? `<button class="btn primary" type="button" id="tripEnd">End trip</button>` : ""}<button class="btn ghost" type="button" id="tripRename">Rename</button>${loose.length ? `<button class="btn ghost" type="button" id="tripAdd">Add ${loose.length} ${loose.length === 1 ? "find" : "finds"} from these dates</button>` : ""}</div>
+    ${list.some(f => f.lat != null) || hikes.length ? `<div class="mini-map" id="tripMap" style="height:260px"></div>` : ""}
+    ${names.length ? `<p><b>Found:</b> ${names.map(esc).join(", ")}</p>` : ""}
+    <div class="list">${list.map(cardHTML).join("") || `<p class="hint">No finds on this trip yet.</p>`}</div>
+    <div class="btn-row"><button class="btn small danger" type="button" id="tripDel">Delete trip</button></div><p class="hint">Deleting a trip keeps its finds.</p>
+  </div>`;
+  hydrateThumbs(main);
+  const mapEl = $("#tripMap");
+  if (mapEl && hasLeaflet) {
+    const pts = list.filter(f => f.lat != null).map(f => [f.lat, f.lng]);
+    const m = makeMap(mapEl, pts[0] || defaultCenter(), 13, { dragging: !L.Browser.mobile, scrollWheelZoom: false });
+    if (m) {
+      list.filter(f => f.lat != null).forEach(f => L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(m).bindPopup(`<a href="#find-${esc(f.id)}">${esc(f.name || "Not yet identified")}</a>`));
+      const all = [...pts];
+      hikes.forEach(h => { const ll = h.points.map(p => [p[0], p[1]]); all.push(...ll); L.polyline(ll, { color: getComputedStyle(document.documentElement).getPropertyValue("--plant").trim(), weight: 3, dashArray: "6 6" }).addTo(m); });
+      if (all.length > 1) m.fitBounds(all, { padding: [30, 30], maxZoom: 15 });
+    }
+  }
+  const e1 = $("#tripEnd"); if (e1) e1.addEventListener("click", () => { saveTrips(lsGet("trips", []).map(x => x.id === id ? { ...x, end: Date.now() } : x)); lsSet("tripLive", null); toast("Trip ended"); renderTrip(id); });
+  $("#tripRename").addEventListener("click", () => {
+    $("#tripTitle").outerHTML = `<div class="btn-row"><input type="text" id="tripNew" value="${esc(t.name)}" style="flex:1"><button class="btn small plant" type="button" id="tripSave">Save</button></div>`;
+    $("#tripSave").addEventListener("click", () => { const v = $("#tripNew").value.trim(); if (v) saveTrips(lsGet("trips", []).map(x => x.id === id ? { ...x, name: v } : x)); renderTrip(id); });
+  });
+  const ad = $("#tripAdd"); if (ad) ad.addEventListener("click", async () => { for (const f of loose) { f.tripId = id; await store.put("finds", f); } await loadFinds(); toast("Added to the trip"); renderTrip(id); });
+  $("#tripDel").addEventListener("click", async () => {
+    for (const f of list) { delete f.tripId; await store.put("finds", f); }
+    saveTrips(lsGet("trips", []).filter(x => x.id !== id)); if (activeTripId() === id) lsSet("tripLive", null);
+    await loadFinds(); toast("Trip deleted. Its finds are kept."); location.hash = "trips";
+  });
+}
+
+/* ============================================================
+   Trash: deleted finds wait 30 days before they're gone.
+   ============================================================ */
+function renderTrash() {
+  setChrome({ title: "Trash", back: true });
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">Deleted finds stay here for 30 days, then they're removed for good.</p>
+    ${trash.length ? trash.map(f => `<div class="panel" style="gap:8px"><div class="switch" style="align-items:center"><span><b>${esc(f.name || "Not yet identified")}</b><br><span class="hint">${esc(fmtDate(f.foundAt))} · deleted ${esc(ago(f.deletedAt))} · ${Math.max(0, 30 - Math.floor((Date.now() - f.deletedAt) / DAY))} days left</span></span></div>
+      <div class="btn-row"><button class="btn small plant" type="button" data-restore="${esc(f.id)}">Restore</button><button class="btn small danger" type="button" data-purge="${esc(f.id)}">Delete forever</button></div></div>`).join("")
+      + `<div class="btn-row"><button class="btn small danger" type="button" id="emptyTrash">Empty the trash</button></div>` : `<div class="empty"><h2>The trash is empty</h2></div>`}
+  </div>`;
+  $$("[data-restore]").forEach(b => b.addEventListener("click", async () => { const f = trash.find(x => x.id === b.dataset.restore); delete f.deletedAt; await store.put("finds", f); await loadFinds(); toast("Find restored"); renderTrash(); }));
+  $$("[data-purge]").forEach(b => b.addEventListener("click", async () => {
+    if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to delete"; return; }
+    await purgeFind(trash.find(x => x.id === b.dataset.purge)); await loadFinds(); toast("Deleted for good"); renderTrash();
+  }));
+  const et = $("#emptyTrash");
+  if (et) et.addEventListener("click", async () => {
+    if (et.dataset.armed !== "1") { et.dataset.armed = "1"; et.textContent = `Tap again to delete ${trash.length} for good`; return; }
+    for (const f of trash) await purgeFind(f); await loadFinds(); toast("Trash emptied"); renderTrash();
+  });
+}
+
+/* ============================================================
+   Import old photos: location and date come from the photo.
+   ============================================================ */
+function renderImport() {
+  setChrome({ title: "Import photos", back: true });
+  main.innerHTML = `<div class="wrap view">
+    <div class="panel"><h3>Import old photos</h3><p>Pick photos from your gallery. Each one's location and date are read from the photo itself, so no GPS is needed. They're saved as finds marked <b>Add details</b>.</p>
+      <div class="seg" role="group" aria-label="Type" id="impType"><button type="button" data-v="mushroom" aria-pressed="true">Mushrooms</button><button type="button" data-v="plant" aria-pressed="false">Plants</button></div>
+      <label class="switch" for="impGroup"><span>Put photos taken within 10 minutes and 50 m of each other into one find</span><input type="checkbox" id="impGroup" checked></label>
+      <div class="btn-row"><label class="btn plant" for="impIn"><svg><use href="#i-img"/></svg>Choose photos</label></div>
+      <input class="sr" type="file" id="impIn" accept="image/*" multiple>
+      <div class="progress" id="impProg" hidden><i></i></div><p id="impMsg" class="hint"></p></div>
+    <p class="hint">Some apps remove the location when sharing photos. Pick them from the gallery or Files instead of a chat app.</p>
+  </div>`;
+  let type = "mushroom";
+  $$("#impType button").forEach(b => b.addEventListener("click", () => { type = b.dataset.v; $$("#impType button").forEach(x => x.setAttribute("aria-pressed", x === b)); }));
+  $("#impIn").addEventListener("change", async e => {
+    const files = [...(e.target.files || [])]; e.target.value = "";
+    if (!files.length) return;
+    const prog = $("#impProg"), bar = prog.firstElementChild, msg = $("#impMsg");
+    prog.hidden = false;
+    const items = [];
+    for (let i = 0; i < files.length; i++) {
+      msg.textContent = `Reading ${i + 1} of ${files.length}…`; bar.style.width = ((i + 1) / files.length * 50) + "%";
+      const ex = await exifRead(files[i]);
+      items.push({ file: files[i], gps: ex.gps, when: ex.date || new Date(files[i].lastModified) });
+    }
+    items.sort((a, b) => a.when - b.when);
+    const groups = [];
+    for (const it of items) {
+      const g = groups[groups.length - 1];
+      const near = g && $("#impGroup").checked && Math.abs(it.when - g[g.length - 1].when) <= 10 * 60000 && (!it.gps || !g[0].gps || haversine(it.gps, g[0].gps) <= 0.05);
+      if (near) g.push(it); else groups.push([it]);
+    }
+    let made = 0, withLoc = 0, done = 0;
+    for (const g of groups) {
+      const photos = [];
+      for (const it of g) {
+        try { const blob = await resizeImage(it.file); const key = "p-" + uid(); await store.put("photos", blob, key); photos.push({ key, label: photos.length ? "Detail" : "Whole" }); } catch (err) {}
+        done++; bar.style.width = (50 + done / items.length * 50) + "%"; msg.textContent = `Saving ${done} of ${items.length}…`;
+      }
+      if (!photos.length) continue;
+      const gps = (g.find(x => x.gps) || {}).gps || null, whenISO = g[0].when.toISOString(), nowISO = new Date().toISOString();
+      const f = normalise({ id: uid(), type, name: "", photos, lat: gps ? gps.lat : null, lng: gps ? gps.lng : null, acc: null, locSource: gps ? "photo" : null,
+        foundAt: whenISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, imported: true, moon: moonPhase(whenISO),
+        width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "", weather: [], rainRecent: "", temp: null, weatherNote: "" });
+      await store.put("finds", f); made++; if (gps) withLoc++;
+    }
+    if (made && finds.some(x => x.sample)) await removeExamples();
+    await loadFinds();
+    msg.textContent = `Imported ${items.length} ${items.length === 1 ? "photo" : "photos"} as ${made} ${made === 1 ? "find" : "finds"}. ${withLoc} had a location${made - withLoc ? `; pin the other ${made - withLoc} on the map when you add details` : ""}.`;
+    toast(`Imported ${made} ${made === 1 ? "find" : "finds"}`);
+  });
+}
 /* ============================================================
    Species pages: every find with the same name, together.
    ============================================================ */
@@ -847,16 +1063,18 @@ async function renderDetail(id) {
       <h2>${esc(f.name || "Not yet identified")}</h2>
       ${f.name ? (() => { const n = finds.filter(x => speciesKey(x) === speciesKey(f)).length; return `<a href="${speciesHref(f)}" class="hint" style="color:var(--plant);font-weight:700;text-decoration:none">${n > 1 ? `See all ${n} finds of this species` : "Species page"} ›</a>`; })() : ""}
       <div class="meta num" style="font-size:15px"><span>${esc(fmtDate(f.foundAt, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</span><span class="sep">${esc(fmtTime(f.foundAt))}</span><span class="sep">${esc(timeOfDay(new Date(f.foundAt)))}</span></div>
-      ${f.tags.length ? `<div class="chips" style="gap:6px">${f.tags.map(t => `<span class="tag" style="cursor:default">#${esc(t)}</span>`).join("")}</div>` : ""}
     </div>
     <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>Never eat anything based on this log or any app${f.edibility === "edible" ? ", even when it's marked edible" : ""}.</b> Many deadly species look like edible ones. Have every find checked in person by an expert.</div></div>
     ${f.idApp && (f.idApp.result || f.idApp.confidence != null) ? `<div class="section"><h3>Identification</h3><div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))"><div class="fact"><span class="eyebrow">${esc(f.idApp.source || "Shroom ID")} says</span><span class="v">${esc(f.idApp.result || "—")}</span></div><div class="fact"><span class="eyebrow">Confidence</span><span class="v num">${f.idApp.confidence != null ? esc(f.idApp.confidence) + "<small> %</small>" : "—"}</span></div></div><p class="hint">An app's suggestion, not a confirmed identification.</p></div>` : ""}
     ${f.lookalikes.length ? `<div class="section"><h3>Lookalikes</h3><div class="settings-list">${f.lookalikes.map(l => `<div class="panel" style="gap:6px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><b style="min-width:0">${esc(l.name)}</b><span class="edib ${esc(l.danger || "unknown")}" style="flex:none">${esc({ deadly: "Deadly", toxic: "Toxic", inedible: "Inedible" }[l.danger] || "Check")}</span></div>${l.how ? `<p>${esc(l.how)}</p>` : ""}<p style="color:${l.ruledOut ? "var(--plant)" : "var(--danger)"};font-weight:700">${l.ruledOut ? "Ruled out" : "Not ruled out yet"}${l.note ? `<span style="font-weight:400;color:var(--muted)">: ${esc(l.note)}</span>` : ""}</p></div>`).join("")}</div><p class="hint">This list isn't complete. Ruling these out doesn't make a find safe to eat.</p></div>` : ""}
+    ${f.idReview ? `<div class="section" id="revBox"><h3>Suggested ID change</h3>${idReviewHTML(f)}</div>` : ""}
+    ${(f.idHistory || []).length ? `<details class="panel"><summary style="cursor:pointer;font-weight:700">ID history</summary><ul style="margin:8px 0 0;padding-left:20px">${f.idHistory.map(h => `<li>${esc(h.name || "Not named")} → ${esc(h.replacedBy)}, ${esc(fmtDate(new Date(h.at).toISOString()))} (${esc(h.source)})</li>`).join("")}</ul></details>` : ""}
+    ${f.tripId && tripById(f.tripId) ? `<p class="coords">Part of the trip <a href="#trip-${esc(f.tripId)}" style="color:var(--plant)">${esc(tripById(f.tripId).name)}</a>.</p>` : ""}
     ${f.trailId ? `<p class="coords">Found while recording a trail. <a href="#map" style="color:var(--plant)">See trails on the map</a></p>` : ""}
     ${f.inat && f.inat.id ? `<div class="panel" id="inatPanel"><h3>iNaturalist</h3>
         <p><span class="${f.inat.quality === "research" ? "due" : ""}">${esc(inatQualityLabel(f.inat.quality))}</span></p>
         ${f.inat.taxon ? `<p style="color:var(--fg)">Community ID: <b>${esc(f.inat.common ? f.inat.common + " (" + f.inat.taxon + ")" : f.inat.taxon)}</b>${f.inat.rank && f.inat.rank !== "species" ? ` · ${esc(f.inat.rank)}` : ""}${f.inat.idCount ? ` · ${f.inat.agree} of ${f.inat.idCount} ${f.inat.idCount === 1 ? "person agrees" : "people agree"}` : ""}</p>` : `<p>No IDs yet. Experts usually look within a few days.</p>`}
-        <div class="btn-row"><a class="btn small" href="${esc(f.inat.url)}" target="_blank" rel="noopener">Open on iNaturalist</a><button class="btn small ghost" type="button" id="inatSync">Check for new IDs</button>${f.inat.taxon && f.inat.taxon !== f.name ? `<button class="btn small ghost" type="button" id="inatUse">Use as name</button>` : ""}</div>
+        <div class="btn-row"><a class="btn small" href="${esc(f.inat.url)}" target="_blank" rel="noopener">Open on iNaturalist</a><button class="btn small ghost" type="button" id="inatSync">Check for new IDs</button></div>
         ${f.inat.syncedAt ? `<p class="hint">Checked ${esc(ago(f.inat.syncedAt))}. Even a research-grade ID doesn't mean it's safe to eat.</p>` : ""}</div>`
       : f.inatQueued ? `<div class="panel"><h3>iNaturalist</h3><p>Waiting to upload. It goes as soon as you have signal${f.lat == null ? ", once the find has a location" : ""}.</p></div>` : ""}
     ${nv ? `<div class="panel"><h3>Revisit this spot</h3><p><span class="due">${esc(visitLabel(nv.days))}</span>. Check around ${esc(fmtDate(nv.date.toISOString(), { day: "numeric", month: "long" }))}${nv.date.getFullYear() !== new Date().getFullYear() ? " next year" : ""}.</p></div>` : ""}
@@ -888,7 +1106,7 @@ async function renderDetail(id) {
     <div id="voiceBox" class="section"></div>
     <div class="btn-row">${f.lat != null ? '<button class="btn plant" type="button" id="compassBtn"><svg><use href="#i-gps"/></svg>Guide me here</button>' : ""}<button class="btn" type="button" id="shareOne"><svg><use href="#i-share"/></svg>Share with a buddy</button></div>
     ${f.blurred ? `<p class="hint">${esc(f.sharedFrom || "Your buddy")} hid the exact spot, so the location is only accurate to about 1 km.</p>` : ""}
-    <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Delete</button></div>
+    <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Move to trash</button></div>
   </div>`;
   if (f.photos.length) {
     const hero = $("#heroImg");
@@ -904,7 +1122,8 @@ async function renderDetail(id) {
   voicePlayersHTML(f.voice).then(h => { const vb = $("#voiceBox"); if (vb && h) vb.innerHTML = `<h3>Voice notes</h3>${h}`; });
   const isb = $("#inatSync");
   if (isb) isb.addEventListener("click", async () => { isb.disabled = true; try { await inatSyncOne(f); await loadFinds(); toast("Checked iNaturalist"); renderDetail(id); } catch (e) { toast(e.message === "token_expired" ? "Your iNaturalist sign-in has expired. Reconnect under More." : "Couldn't reach iNaturalist"); isb.disabled = false; } });
-  const iu = $("#inatUse");
+  const rb = $("#revBox"); if (rb) wireIdReview(rb, () => renderDetail(id));
+  const iu = null;
   if (iu) iu.addEventListener("click", async () => { f.name = f.inat.common ? `${f.inat.common}, ${f.inat.taxon}` : f.inat.taxon; f.updatedAt = new Date().toISOString(); await store.put("finds", f); await loadFinds(); toast("Name updated"); renderDetail(id); });
   const cb = $("#compassBtn"); if (cb) cb.addEventListener("click", () => openCompass(f));
   $("#shareOne").addEventListener("click", () => {
@@ -912,7 +1131,8 @@ async function renderDetail(id) {
     row.outerHTML = `<div class="panel" id="sharePanel"><h3>Share this find</h3><label class="switch" for="blurOne"><span>Hide the exact spot (about 1 km)</span><input type="checkbox" id="blurOne" checked></label><div class="btn-row"><button class="btn small primary" type="button" id="shareGo"><svg><use href="#i-share"/></svg>Share</button></div><p class="hint">Sends a file by message, email or Drive. Your buddy opens it in Spore & Leaf under More.</p></div>`;
     $("#shareGo").addEventListener("click", () => sendShare([f], $("#blurOne").checked));
   });
-  $("#delBtn").addEventListener("click", () => {
+  $("#delBtn").addEventListener("click", () => trashFind(f, () => { location.hash = "log"; }));
+  if (false) $("#delBtn").addEventListener("click", () => {
     $("#delRow").innerHTML = `<div class="banner danger" style="width:100%"><div class="grow">Delete this find and its ${f.photos.length === 1 ? "photo" : "photos"}? This can't be undone.</div></div><button class="btn danger" type="button" id="delYes">Yes, delete</button><button class="btn ghost" type="button" id="delNo">Keep it</button>`;
     $("#delNo").addEventListener("click", () => renderDetail(id));
     $("#delYes").addEventListener("click", async () => {
@@ -1074,9 +1294,9 @@ async function renderForm(id) {
       <div class="field"><label for="desc">Describe it</label><textarea id="desc">${esc(f.description)}</textarea>
         ${SpeechRec ? '<div class="btn-row"><button class="btn small" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button></div>' : ""}</div>
       ${canRecord() ? `<div class="lbl">Voice notes</div><div id="voiceList" class="settings-list"></div><div class="btn-row"><button class="btn small" type="button" id="recBtn"><svg><use href="#i-mic"/></svg><span>Record a voice note</span></button></div><span class="hint">Voice notes work with no signal. Dictation turns speech into text, and on most phones it needs signal.</span>` : ""}
-      <div class="field"><label for="tags">Tags</label><input type="text" id="tags" placeholder="e.g. #oak-woods, #autumn, #river-walk" value="${esc(f.tags.map(t => "#" + t).join(", "))}"><span class="hint">Separate tags with commas. Tap a tag on the Finds screen to filter by it.</span></div>
     </fieldset>
 
+    ${tripList().length ? `<fieldset><legend>Trip</legend><div class="field"><label for="tripPick">Part of a trip</label><select id="tripPick"><option value="">No trip</option>${tripList().map(t => `<option value="${esc(t.id)}" ${(f.tripId || (!id && activeTripId())) === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></fieldset>` : ""}
     <fieldset><legend>Recent weather</legend>
       <div class="loc-box" id="wxStatusBox"><div class="loc-status none" id="wxStatus"><svg><use href="#i-cloud"/></svg><span></span></div>
         <div class="btn-row" id="wxAutoRow"><button class="btn small" type="button" id="wxAuto"><svg><use href="#i-cloud"/></svg>Fill in from weather records</button></div></div>
@@ -1259,10 +1479,10 @@ async function renderForm(id) {
     $("#wxStatus span").textContent = msg;
   }
   function wxRow() {
-    const can = navigator.onLine && f.lat != null;
+    const can = netOK() && f.lat != null;
     $("#wxAutoRow").hidden = !can;
     if (wxBusy) return;
-    if (!navigator.onLine) wxStatus("No signal. Fill in the weather by hand, or edit this find later to fill it in.", false);
+    if (!netOK()) wxStatus("No signal. Fill in the weather by hand, or edit this find later to fill it in.", false);
     else if (f.lat == null) wxStatus("Weather fills in by itself once the location is set.", false);
     else if (wxDoneFor) wxStatus("Weather filled in from Open-Meteo. You can change anything below.", true);
     else wxStatus("Ready to fill in the weather.", false);
@@ -1332,7 +1552,7 @@ async function renderForm(id) {
   function showTerrain() { $("#terrainLine").textContent = terrainText(f) ? "Terrain: " + terrainText(f) : ""; }
   let terrainFor = null;
   async function fillTerrain() {
-    if (f.lat == null || !navigator.onLine) return;
+    if (f.lat == null || !netOK()) return;
     const sig = `${f.lat.toFixed(4)},${f.lng.toFixed(4)}`;
     if (sig === terrainFor) return;
     terrainFor = sig;
@@ -1373,7 +1593,6 @@ async function renderForm(id) {
     f.substrate = picked(form, "subChips")[0] || "";
     f.habitat = picked(form, "habChips");
     f.trees = $("#trees").value.trim();
-    f.tags = parseTags($("#tags").value);
     f.edibility = $("#edib").value;
     f.revisit = $("#revisit").checked;
     f.smell = picked(form, "smellChips");
@@ -1382,6 +1601,7 @@ async function renderForm(id) {
     f.bruiseNote = f.type === "mushroom" ? $("#bruiseNote").value.trim() : "";
     f.lookalikes = looks.map(({ name, danger, how, ruledOut, note, suggested }) => ({ name, danger, how, ruledOut, note: note.trim(), suggested: !!suggested }));
     if (activeTrail && !f.trailId) f.trailId = activeTrail.id;
+    const tripPick = $("#tripPick"); if (tripPick) { if (tripPick.value) f.tripId = tripPick.value; else delete f.tripId; }
     const conf = $("#idConf").value;
     f.idApp = { source: "Shroom ID", result: $("#idResult").value.trim(), confidence: conf === "" ? null : Math.max(0, Math.min(100, Math.round(+conf))) };
     f.updatedAt = nowISO;
@@ -1476,7 +1696,7 @@ function fruitingCandidates() { return finds.filter(f => f.type === "mushroom" &
 async function checkFruiting(force) {
   const cached = lsGet("fruiting", null);
   if (!force && cached && Date.now() - cached.ts < 6 * 3600000) return cached;
-  if (!navigator.onLine) return cached;
+  if (!netOK()) return cached;
   const cands = fruitingCandidates();
   const groups = new Map();
   for (const f of cands) { const k = `${f.lat.toFixed(2)},${f.lng.toFixed(2)}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(f); }
@@ -1726,6 +1946,7 @@ async function saveVoiceFind(blob, secs) {
     lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, acc: loc ? loc.acc : null, locSource: loc ? "gps" : null, elev: loc ? loc.alt : null,
     foundAt: nowISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, moon: moonPhase(nowISO),
     width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "", weather: [], rainRecent: "", temp: null, weatherNote: "" });
+  if (activeTripId() && !f.tripId) f.tripId = activeTripId();
   await store.put("finds", f);
   if (finds.some(x => x.sample)) await removeExamples();
   await loadFinds();
@@ -1942,6 +2163,46 @@ async function inatUpload(f) {
   }
   return obsId;
 }
+function idDiffers(name, taxon, common) {
+  const n = (name || "").toLowerCase();
+  if (!n) return true;
+  return !(n.includes(taxon.toLowerCase()) || (common && n.includes(common.toLowerCase())));
+}
+async function acceptID(f) {
+  const r = f.idReview; if (!r) return;
+  f.idHistory = [...(f.idHistory || []), { name: r.from, replacedBy: r.to, at: Date.now(), source: "iNaturalist" }];
+  f.name = r.to; delete f.idReview; f.updatedAt = new Date().toISOString();
+  await store.put("finds", f); await loadFinds();
+}
+async function keepID(f) {
+  const r = f.idReview; if (!r) return;
+  f.idDismissed = r.taxon; delete f.idReview; await store.put("finds", f); await loadFinds();
+}
+function idReviewHTML(f) {
+  const r = f.idReview;
+  return `<div class="panel" style="gap:8px">
+    <a href="#find-${esc(f.id)}" style="color:var(--fg);text-decoration:none;font-weight:700">${esc(fmtDate(f.foundAt))} · ${f.type === "plant" ? "Plant" : "Mushroom"} ›</a>
+    <div class="facts" style="grid-template-columns:1fr 1fr">
+      <div class="fact"><span class="eyebrow">Your ID now</span><span class="v">${esc(r.from || "Not named")}</span></div>
+      <div class="fact"><span class="eyebrow">iNaturalist suggests</span><span class="v" style="color:var(--plant)">${esc(r.to)}</span></div>
+    </div>
+    <p class="hint" style="margin:0">${esc(inatQualityLabel(r.quality))}. ${r.agree} of ${r.idCount} ${r.idCount === 1 ? "identifier agrees" : "identifiers agree"}.</p>
+    <div class="btn-row"><button class="btn small plant" type="button" data-acc="${esc(f.id)}">Use the new ID</button><button class="btn small ghost" type="button" data-keep="${esc(f.id)}">Keep mine</button></div>
+  </div>`;
+}
+function wireIdReview(root, after) {
+  $$("[data-acc]", root).forEach(b => b.addEventListener("click", async () => { const f = finds.find(x => x.id === b.dataset.acc); if (f) { await acceptID(f); toast("ID updated. The old one is kept in its history."); after(); } }));
+  $$("[data-keep]", root).forEach(b => b.addEventListener("click", async () => { const f = finds.find(x => x.id === b.dataset.keep); if (f) { await keepID(f); toast("Kept your ID"); after(); } }));
+}
+function renderReview() {
+  setChrome({ title: "Review ID changes", back: true });
+  const list = finds.filter(f => f.idReview);
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">When experts on iNaturalist settle on a different ID from yours, it waits here. Nothing changes until you choose. Even a confirmed ID doesn't make anything safe to eat.</p>
+    ${list.length ? list.map(idReviewHTML).join("") : `<div class="empty"><h2>Nothing to review</h2><p>New suggestions from iNaturalist show up here.</p></div>`}
+  </div>`;
+  wireIdReview(main, renderReview);
+}
 async function inatSyncOne(f) {
   const j = await inatFetch(`/observations/${f.inat.id}`);
   const o = j.results && j.results[0];
@@ -1950,10 +2211,14 @@ async function inatSyncOne(f) {
   const ids = (o.identifications || []).filter(i => i.current);
   const agree = t ? ids.filter(i => i.taxon && (i.taxon.id === t.id || (i.taxon.ancestor_ids || []).includes(t.id))).length : 0;
   f.inat = { ...f.inat, quality: o.quality_grade, taxon: t ? t.name : "", common: t ? (t.preferred_common_name || "") : "", rank: t ? t.rank : "", idCount: ids.length, agree, syncedAt: Date.now(), url: `${INAT}/observations/${f.inat.id}` };
+  // Never rename a find here. A different ID goes to the review list for Henry to confirm.
+  if (t && ids.length && idDiffers(f.name, t.name, f.inat.common) && f.idDismissed !== t.name) {
+    f.idReview = { from: f.name || "", to: f.inat.common ? `${f.inat.common}, ${t.name}` : t.name, taxon: t.name, quality: o.quality_grade, agree, idCount: ids.length, at: Date.now() };
+  } else if (!t || !idDiffers(f.name, t.name, f.inat.common)) delete f.idReview;
   await store.put("finds", f);
 }
 async function inatProcess() {
-  if (inatBusy || !navigator.onLine || !inat.connected()) return;
+  if (inatBusy || !netOK() || !inat.connected()) return;
   inatBusy = true;
   let up = 0, changed = 0, expired = false;
   try {
@@ -1967,7 +2232,8 @@ async function inatProcess() {
     }
   } finally { inatBusy = false; }
   if (up) toast(`Uploaded ${up} ${up === 1 ? "find" : "finds"} to iNaturalist`);
-  if (changed) toast(`${changed} iNaturalist ${changed === 1 ? "ID has" : "IDs have"} changed`);
+  const nRev = finds.filter(f => f.idReview).length;
+  if (changed) toast(nRev ? `${nRev} ID ${nRev === 1 ? "change" : "changes"} to review` : `iNaturalist updated ${changed} ${changed === 1 ? "find" : "finds"}`);
   if (expired) lsSet("inatExpired", true); else lsSet("inatExpired", false);
   if (up || changed) { await loadFinds(); if ((location.hash || "#log").startsWith("#find-") || location.hash === "#log" || !location.hash) route(); }
 }
@@ -1983,32 +2249,103 @@ const trailListeners = new Set();
 function trailKm(pts) { let d = 0; for (let i = 1; i < pts.length; i++) d += haversine({ lat: pts[i-1][0], lng: pts[i-1][1] }, { lat: pts[i][0], lng: pts[i][1] }); return d; }
 function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; }
 async function holdScreen() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail) holdScreen(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && activeTrail && !settings.camp) holdScreen(); });
+let trailTimer = null;
+const TRAIL_RATES = [[30, "Every 30 seconds"], [60, "Every minute"], [120, "Every 2 minutes"], [180, "Every 3 minutes"], [240, "Every 4 minutes"], [300, "Every 5 minutes"]];
+const trailRate = () => lsGet("trailRate", 120);
+// GPS stays off between fixes, so a longer gap means much less battery.
+function trailBatteryText(sec) {
+  return sec <= 30 ? "Roughly 6 to 10% battery an hour with the screen on." : sec <= 60 ? "Roughly 5 to 8% an hour with the screen on." : sec <= 180 ? "Roughly 4 to 6% an hour with the screen on." : "Roughly 3 to 5% an hour with the screen on.";
+}
 function watchTrail() {
-  if (!geoAvailable() || trailWatch != null) return;
-  holdScreen();
-  trailWatch = navigator.geolocation.watchPosition(p => {
+  if (!geoAvailable() || trailWatch != null || trailTimer != null) return;
+  const onFix = p => {
     if (!activeTrail) return;
-    const { latitude: lat, longitude: lng, accuracy } = p.coords;
-    lastLoc = { lat, lng, acc: Math.round(accuracy), ts: Date.now() }; lsSet("lastLoc", lastLoc);
+    const { latitude: lat, longitude: lng, accuracy, altitude } = p.coords;
+    lastLoc = { lat, lng, acc: Math.round(accuracy), alt: altitude != null ? Math.round(altitude) : null, ts: Date.now() }; lsSet("lastLoc", lastLoc);
     if (accuracy > 60) return;
     const pts = activeTrail.points, prev = pts[pts.length - 1];
-    if (prev && haversine({ lat: prev[0], lng: prev[1] }, { lat, lng }) < 0.006) return;
-    pts.push([+lat.toFixed(6), +lng.toFixed(6), Date.now()]);
+    const alt = altitude != null ? Math.round(altitude) : null;
+    if (prev && haversine({ lat: prev[0], lng: prev[1] }, { lat, lng }) < 0.006) { activeTrail.lastFix = Date.now(); lsSet("trailLive", activeTrail); trailListeners.forEach(fn => fn()); return; }
+    pts.push([+lat.toFixed(6), +lng.toFixed(6), Date.now(), alt]);
+    activeTrail.lastFix = Date.now();
     lsSet("trailLive", activeTrail);
     trailListeners.forEach(fn => fn());
-  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  };
+  const once = () => navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  once(); trailTimer = setInterval(once, trailRate() * 1000);
+  if (!settings.camp) holdScreen();
+}
+function restartTrailWatch() { if (!activeTrail) return; if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; } if (trailTimer != null) { clearInterval(trailTimer); trailTimer = null; } try { if (wakeLock) wakeLock.release(); } catch (e) {} watchTrail(); }
+// Distance, elevation gain and loss, moving time and pace, like a fitness app.
+function trailStats(t) {
+  const pts = t.points || [];
+  const km = trailKm(pts);
+  let up = 0, down = 0, moving = 0, ref = null;
+  const alts = pts.map(p => p[3]).filter(a => a != null);
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i][3];
+    // Only count climbs over 4 m, so GPS height wobble doesn't add up.
+    if (a != null) { if (ref == null) ref = a; else if (a - ref >= 4) { up += a - ref; ref = a; } else if (ref - a >= 4) { down += ref - a; ref = a; } }
+    if (i) { const d = haversine({ lat: pts[i-1][0], lng: pts[i-1][1] }, { lat: pts[i][0], lng: pts[i][1] }), dt = pts[i][2] - pts[i-1][2]; if (d / (dt / 3600000) > 0.8) moving += dt; }
+  }
+  const total = (t.end || t.lastFix || Date.now()) - t.start;
+  return { km, up: Math.round(up), down: Math.round(down), moving, total, pace: km > 0.05 && moving ? moving / 60000 / km : null, hi: alts.length ? Math.max(...alts) : null, lo: alts.length ? Math.min(...alts) : null, n: pts.length };
+}
+function fmtPace(minPerKm) { if (minPerKm == null) return "—"; const v = settings.units === "in" ? minPerKm * 1.609 : minPerKm; const m = Math.floor(v), s2 = Math.round((v - m) * 60); return `${m}:${String(s2 === 60 ? 0 : s2).padStart(2, "0")}${settings.units === "in" ? " /mi" : " /km"}`; }
+function fmtElev(m) { return m == null ? "—" : settings.units === "in" ? `${Math.round(m * 3.281)} ft` : `${m} m`; }
+function elevProfileSVG(t) {
+  const pts = (t.points || []).filter(p => p[3] != null);
+  if (pts.length < 3) return `<p class="hint" style="margin:0">The elevation profile appears after a few GPS fixes with height.</p>`;
+  let d = 0; const xs = [0];
+  for (let i = 1; i < pts.length; i++) { d += haversine({ lat: pts[i-1][0], lng: pts[i-1][1] }, { lat: pts[i][0], lng: pts[i][1] }); xs.push(d); }
+  const lo = Math.min(...pts.map(p => p[3])), hi = Math.max(...pts.map(p => p[3])), span = Math.max(10, hi - lo), W = 320, H = 90;
+  const path = pts.map((p, i) => `${(xs[i] / (d || 1) * W).toFixed(1)},${(H - 6 - (p[3] - lo) / span * (H - 16)).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Elevation profile from ${fmtElev(lo)} to ${fmtElev(hi)}" style="display:block"><polygon points="0,${H} ${path} ${W},${H}" fill="color-mix(in srgb, var(--plant) 22%, transparent)"/><polyline points="${path}" fill="none" stroke="var(--plant)" stroke-width="2" stroke-linejoin="round"/><text x="4" y="12" fill="var(--muted)" font-size="11">${fmtElev(hi)}</text><text x="4" y="${H - 4}" fill="var(--muted)" font-size="11">${fmtElev(lo)}</text><text x="${W - 4}" y="${H - 4}" fill="var(--muted)" font-size="11" text-anchor="end">${esc(fmtDist(d))}</text></svg>`;
+}
+// Battery: sample the phone's level while a hike records, and project time left from the recent drain.
+let battery = null, battLog = lsGet("battLog", []);
+if (navigator.getBattery) navigator.getBattery().then(b => { battery = b; b.addEventListener("levelchange", logBattery); b.addEventListener("chargingchange", () => { battLog = []; lsSet("battLog", battLog); }); }).catch(() => {});
+function logBattery() {
+  if (!battery || !activeTrail || battery.charging) return;
+  battLog.push([Date.now(), battery.level]);
+  battLog = battLog.filter(x => Date.now() - x[0] < 90 * 60000);
+  lsSet("battLog", battLog);
+}
+function batteryHTML() {
+  if (!battery) return "";
+  const pct = Math.round(battery.level * 100);
+  if (battery.charging) return `<p class="hint num" style="margin:0">Battery ${pct}%, charging.</p>`;
+  const log = battLog.filter(x => activeTrail && x[0] >= activeTrail.start);
+  const first = log[0], last = [Date.now(), battery.level];
+  const mins = first ? (last[0] - first[0]) / 60000 : 0, used = first ? first[1] - last[1] : 0;
+  if (!first || mins < 15 || used < 0.02) return `<p class="hint num" style="margin:0">Battery ${pct}%. A time-left estimate appears after about 15 minutes of recording.</p>`;
+  const perHour = used / mins * 60, hrs = battery.level / perHour;
+  return `<p class="num" style="margin:0"><b>Battery ${pct}%</b>, about ${hrs >= 1 ? `${Math.floor(hrs)} h ${Math.round((hrs % 1) * 60)} min` : `${Math.round(hrs * 60)} min`} left at this rate <span class="hint">(estimate: ${Math.round(perHour * 100)}% an hour for the whole phone)</span></p>`;
+}
+function trailStatsHTML(t) {
+  const st = trailStats(t);
+  return `<div class="facts" style="grid-template-columns:repeat(3,1fr)">
+    <div class="fact"><span class="eyebrow">Distance</span><span class="v num">${esc(fmtDist(st.km))}</span></div>
+    <div class="fact"><span class="eyebrow">Climb</span><span class="v num">${esc(fmtElev(st.up))}</span></div>
+    <div class="fact"><span class="eyebrow">Descent</span><span class="v num">${esc(fmtElev(st.down))}</span></div>
+    <div class="fact"><span class="eyebrow">Moving</span><span class="v num">${esc(fmtDur(st.moving))}</span></div>
+    <div class="fact"><span class="eyebrow">Total time</span><span class="v num">${esc(fmtDur(st.total))}</span></div>
+    <div class="fact"><span class="eyebrow">Pace</span><span class="v num">${esc(fmtPace(st.pace))}</span></div>
+  </div>${elevProfileSVG(t)}`;
 }
 function startTrail() {
+  battLog = []; lsSet("battLog", battLog); setTimeout(logBattery, 2000);
   activeTrail = { id: "t-" + uid(), start: Date.now(), points: [] };
   lsSet("trailLive", activeTrail);
   watchTrail();
 }
 async function stopTrail() {
   if (trailWatch != null) { navigator.geolocation.clearWatch(trailWatch); trailWatch = null; }
+  if (trailTimer != null) { clearInterval(trailTimer); trailTimer = null; }
   try { if (wakeLock) await wakeLock.release(); } catch (e) {}
   const t = activeTrail; activeTrail = null; lsSet("trailLive", null);
-  if (t && t.points.length >= 2) { await store.put("trails", { ...t, end: Date.now(), km: trailKm(t.points) }); return true; }
+  if (t && t.points.length >= 2) { const done = { ...t, end: Date.now() }; const st = trailStats(done); await store.put("trails", { ...done, km: st.km, up: st.up, down: st.down, moving: st.moving, tripId: activeTripId() || undefined }); return true; }
   return false;
 }
 
@@ -2030,7 +2367,8 @@ async function renderMap() {
       <h3>Offline map</h3>
       <p id="offMsg">While you have signal, move the map to the area you forage in, pick Street or Topo (and Hiking trails if you want them) with the layers button, then save it. It will load with no signal later. <span class="num">${tileCount}</span> map tiles are saved on this phone.</p>
       <div class="progress" id="prog" hidden><i></i></div>
-      <div class="btn-row"><button class="btn plant" type="button" id="dlBtn"><svg><use href="#i-down"/></svg><span>Save this area</span></button><button class="btn ghost" type="button" id="meBtn"><svg><use href="#i-gps"/></svg>Find me</button></div>
+      <div class="btn-row"><button class="btn plant" type="button" id="drawBtn"><svg><use href="#i-edit"/></svg>Draw an area</button><button class="btn" type="button" id="dlBtn"><svg><use href="#i-down"/></svg><span>Save what's on screen</span></button><button class="btn ghost" type="button" id="meBtn"><svg><use href="#i-gps"/></svg>Find me</button></div>
+      <div id="drawBox" class="settings-list" hidden></div>
     </div>
   </div>`;
   const m = makeMap($("#bigMap"), defaultCenter(), lastLoc ? 13 : (finds.some(f => f.lat != null) ? 12 : 6));
@@ -2077,12 +2415,14 @@ async function renderMap() {
     const tp = $("#trailPanel"); if (!tp) return;
     if (activeTrail) {
       const km = trailKm(activeTrail.points);
-      tp.innerHTML = `<h3>Recording a trail</h3><p class="num"><span class="due">${esc(fmtDist(km))}</span> walked · ${esc(fmtDur(Date.now() - activeTrail.start))} · ${activeTrail.points.length} points</p>${sunsetHTML()}<p>Keep this page open with the screen on. A web page can't track you while the phone is locked. The Android app will.</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
+      tp.innerHTML = `<h3>Recording a hike</h3>${trailStatsHTML(activeTrail)}${batteryHTML()}<p class="hint num" style="margin:0">GPS checks ${esc(TRAIL_RATES.find(r => r[0] === trailRate())[1].toLowerCase())}${activeTrail.lastFix ? `, last ${esc(ago(activeTrail.lastFix))}` : ""}. ${esc(trailBatteryText(trailRate()))}</p>${sunsetHTML()}<p class="hint" style="margin:0">${settings.camp ? "Camping mode: the screen can turn off, but the web version only records while the app is open." : "The screen stays on while recording. The web version can't track while the phone is locked; the Android app will."}</p><div class="btn-row"><button class="btn primary" type="button" id="trailStop">Stop and save trail</button></div>`;
       $("#trailStop").addEventListener("click", async () => { const ok = await stopTrail(); toast(ok ? "Trail saved" : "Trail too short to save"); renderMap(); });
     } else {
-      tp.innerHTML = `<h3>Trails</h3><p>Record the route you walk. Finds you log while recording are linked to the trail.</p>
+      tp.innerHTML = `<h3>Hikes</h3><p>Record your route with distance, climb, moving time, pace and an elevation profile. Finds you log while recording are linked to it.</p>
+        <div class="field"><label for="trailRate">Check GPS</label><select id="trailRate">${TRAIL_RATES.map(([v, l]) => `<option value="${v}" ${trailRate() === v ? "selected" : ""}>${l}</option>`).join("")}</select><span class="hint"><span id="rateHint">${esc(trailBatteryText(trailRate()))}</span> GPS is off between checks. Longer gaps cut corners on winding trails, so distance and climb read a little low.</span></div>
         <div class="btn-row"><button class="btn plant" type="button" id="trailStart"${geoAvailable() ? "" : " disabled"}><svg><use href="#i-gps"/></svg>Start recording</button></div>
-        ${saved.length ? `<div class="settings-list">${saved.slice(0, 10).map(t => `<div class="switch" style="font-size:15px"><span class="num"><b>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}</b><br><span class="hint">${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}</span></span><span style="display:flex;gap:6px;align-items:center"><button type="button" class="btn small ghost" data-del="${esc(t.id)}">${armDelete === t.id ? "Tap to delete" : "Delete"}</button><input type="checkbox" data-show="${esc(t.id)}" ${hiddenTrails.has(t.id) ? "" : "checked"} aria-label="Show on map"></span></div>`).join("")}</div>` : ""}`;
+        ${saved.length ? `<div class="settings-list">${saved.slice(0, 10).map(t => `<div class="switch" style="font-size:15px"><span class="num"><b>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}</b><br><span class="hint">${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}${t.up != null ? ` · ${esc(fmtElev(t.up))} climb` : ""}</span>${(t.points || []).some(p => p[3] != null) ? `<details><summary class="hint" style="cursor:pointer">Stats and profile</summary>${trailStatsHTML(t)}</details>` : ""}</span><span style="display:flex;gap:6px;align-items:center"><button type="button" class="btn small ghost" data-del="${esc(t.id)}">${armDelete === t.id ? "Tap to delete" : "Delete"}</button><input type="checkbox" data-show="${esc(t.id)}" ${hiddenTrails.has(t.id) ? "" : "checked"} aria-label="Show on map"></span></div>`).join("")}</div>` : ""}`;
+      const tr = $("#trailRate"); if (tr) tr.addEventListener("change", () => { lsSet("trailRate", +tr.value); $("#rateHint").textContent = trailBatteryText(+tr.value); });
       const st = $("#trailStart");
       if (st) st.addEventListener("click", () => { startTrail(); toast("Recording your trail"); setChrome({ title: "Map", tab: "map" }); drawTrailPanel(); drawTrails(); });
       $$("[data-show]", tp).forEach(c => c.addEventListener("change", () => { if (c.checked) hiddenTrails.delete(c.dataset.show); else hiddenTrails.add(c.dataset.show); lsSet("hiddenTrails", [...hiddenTrails]); drawTrails(); }));
@@ -2100,7 +2440,7 @@ async function renderMap() {
     drawTrailPanel(); showMe();
   };
   trailListeners.add(onPoint);
-  const tick = setInterval(() => { if (!document.body.contains($("#trailPanel"))) { clearInterval(tick); return; } if (activeTrail) drawTrailPanel(); }, 30000);
+  const tick = setInterval(() => { if (!document.body.contains($("#trailPanel"))) { clearInterval(tick); return; } if (activeTrail && document.visibilityState === "visible") drawTrailPanel(); }, 60000);
 
   let meMarker = null;
   const showMe = () => { if (!lastLoc) return; if (meMarker) meMarker.setLatLng([lastLoc.lat, lastLoc.lng]); else meMarker = L.marker([lastLoc.lat, lastLoc.lng], { icon: pinIcon("me"), interactive: false }).addTo(m); };
@@ -2109,7 +2449,59 @@ async function renderMap() {
   $("#meBtn").addEventListener("click", async () => {
     try { await getPosition(); showMe(); m.setView([lastLoc.lat, lastLoc.lng], 14); } catch (e) { toast("Location isn't available here"); }
   });
+  // Draw a box on the map, then pick detail and layers, with a size estimate before downloading.
+  const TILE_KB = { osm: 18, topo: 32, hike: 6 };
+  let rect = null;
+  $("#drawBtn").addEventListener("click", () => {
+    if (!netOK()) { toast(settings.camp ? "Turn off camping mode to download maps" : "Downloading maps needs signal"); return; }
+    const box = $("#drawBox"); box.hidden = false;
+    box.innerHTML = `<p class="banner"><b>Drag a box over the area on the map.</b></p><div class="btn-row"><button class="btn small ghost" type="button" id="drawCancel">Cancel</button></div>`;
+    const el = $("#bigMap"); el.scrollIntoView({ block: "center" });
+    m.dragging.disable(); if (m.tap) m.tap.disable(); el.style.touchAction = "none"; el.style.cursor = "crosshair";
+    let a = null;
+    const ll = ev => m.mouseEventToLatLng(ev);
+    const down = ev => { a = ll(ev); if (rect) rect.remove(); rect = L.rectangle([a, a], { color: "#e9a75e", weight: 2, fillOpacity: 0.12 }).addTo(m); ev.preventDefault(); };
+    const move = ev => { if (a) rect.setBounds(L.latLngBounds(a, ll(ev))); };
+    const up = () => { if (!a) return; a = null; finish(); };
+    const off = () => { el.removeEventListener("pointerdown", down); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); m.dragging.enable(); if (m.tap) m.tap.enable(); el.style.touchAction = ""; el.style.cursor = ""; };
+    el.addEventListener("pointerdown", down); el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
+    $("#drawCancel").addEventListener("click", () => { off(); if (rect) { rect.remove(); rect = null; } box.hidden = true; });
+    function finish() {
+      off();
+      const b = rect.getBounds();
+      if (b.getNorthEast().distanceTo(b.getSouthWest()) < 200) { toast("Drag a bigger box"); rect.remove(); rect = null; box.hidden = true; return; }
+      m.fitBounds(b, { padding: [20, 20] });
+      const ids0 = m._layerIds();
+      box.innerHTML = `<div class="field"><label for="dlZoom">Detail</label><select id="dlZoom"><option value="13">Overview: lakes, roads and big trails</option><option value="15" selected>Trails and clearings</option><option value="16">Street level</option><option value="17">Most detail</option></select></div>
+        <div class="chips" role="group" aria-label="Layers">${["osm", "topo", "hike"].map(id => `<label class="chip" style="gap:6px"><input type="checkbox" data-lay="${id}" ${ids0.includes(id) ? "checked" : ""}> ${id === "osm" ? "Street" : id === "topo" ? "Topo" : "Hiking trails"}</label>`).join("")}</div>
+        <p class="num" id="dlEst" style="font-weight:700"></p>
+        <div class="btn-row"><button class="btn plant" type="button" id="dlGo"><svg><use href="#i-down"/></svg><span>Download</span></button><button class="btn ghost" type="button" id="dlCancel">Cancel</button></div>`;
+      const plan = () => {
+        const zMax = +$("#dlZoom").value, lays = $$("[data-lay]", box).filter(c => c.checked).map(c => c.dataset.lay);
+        const list = lays.flatMap(id => tilesFor(b, 8, Math.min(zMax, TILE_LAYERS[id].max)).map(t => [id, ...t]));
+        const mb = list.reduce((acc, t) => acc + TILE_KB[t[0]], 0) / 1024;
+        return { list, mb, lays };
+      };
+      const est = () => {
+        const { list, mb, lays } = plan();
+        $("#dlEst").textContent = !lays.length ? "Pick at least one layer." : `About ${list.length.toLocaleString()} tiles, roughly ${mb < 1 ? "under 1" : Math.round(mb)} MB. ${list.length > 25000 ? "That's too big: pick less detail or a smaller box." : `Takes about ${Math.max(1, Math.round(list.length / 25 / 60))} min on good signal.`}`;
+        $("#dlGo").disabled = !lays.length || list.length > 25000;
+      };
+      est();
+      $("#dlZoom").addEventListener("change", est); $$("[data-lay]", box).forEach(c => c.addEventListener("change", est));
+      $("#dlCancel").addEventListener("click", () => { if (downloading) { downloading = false; return; } rect.remove(); rect = null; box.hidden = true; });
+      $("#dlGo").addEventListener("click", async () => {
+        const { list } = plan();
+        const prog = $("#prog"), bar = prog.firstElementChild; prog.hidden = false; $("#dlGo").disabled = true; $("#dlCancel").textContent = "Stop";
+        const { done, failed } = await downloadTiles(list, d => { bar.style.width = (d / list.length * 100) + "%"; $("#offMsg").textContent = `Saving map tiles: ${d.toLocaleString()} of ${list.length.toLocaleString()}`; });
+        const total = await store.count("tiles").catch(() => 0);
+        $("#offMsg").textContent = done && failed === done ? "The map couldn't be downloaded. Check you have signal and try again." : `Saved the area. ${total.toLocaleString()} map tiles are now on this phone${failed ? `, and ${failed} couldn't be downloaded` : ""}.`;
+        if (rect) { rect.remove(); rect = null; } box.hidden = true;
+      });
+    }
+  });
   $("#dlBtn").addEventListener("click", async () => {
+    if (!netOK()) { toast(settings.camp ? "Turn off camping mode to download maps" : "Downloading maps needs signal"); return; }
     const label = $("#dlBtn span");
     if (downloading) { downloading = false; return; }
     const z = m.getZoom();
@@ -2122,7 +2514,7 @@ async function renderMap() {
     const prog = $("#prog"), bar = prog.firstElementChild;
     prog.hidden = false; label.textContent = "Stop";
     const { done, failed } = await downloadTiles(list, d => { bar.style.width = (d / list.length * 100) + "%"; $("#offMsg").textContent = `Saving map tiles: ${d} of ${list.length}`; });
-    label.textContent = "Save this area";
+    label.textContent = "Save what's on screen";
     const total = await store.count("tiles").catch(() => 0);
     $("#offMsg").textContent = done && failed === done
       ? "The map couldn't be downloaded. Check you have signal and try again."
@@ -2300,7 +2692,7 @@ async function renderEdibles() {
       nd.innerHTML = noData ? `<div class="banner"><svg><use href="#i-warn"/></svg><div class="grow"><b>No iNaturalist data exists here ${scope()}.</b> ${biggerHint()} Until then, the months below are the general guide.</div>${next ? `<button type="button" class="btn small" data-r="${next}">Try ${next} km</button>` : ""}</div>` : "";
       const nb = nd.querySelector("button"); if (nb) nb.addEventListener("click", () => { edView.useArea = false; edView.radius = +nb.dataset.r; lsSet("edRadius", edView.radius); lsSet("edUseArea", false); renderEdibles(); });
     }
-    st += counts ? `Months are from confirmed iNaturalist records ${scope()}.` : noData ? "" : `Months are a general guide for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.${navigator.onLine && place ? "" : " Connect to see local records from iNaturalist."}`;
+    st += counts ? `Months are from confirmed iNaturalist records ${scope()}.` : noData ? "" : `Months are a general guide for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.${netOK() && place ? "" : " Connect to see local records from iNaturalist."}`;
     $("#edStatus").textContent = st;
   };
   draw();
@@ -2321,7 +2713,7 @@ async function renderEdibles() {
     const q = e.target.value.trim();
     if (q.length < 3) { $("#edResults").innerHTML = ""; return; }
     t = setTimeout(async () => {
-      if (!navigator.onLine) { $("#edResults").innerHTML = `<p class="hint">Searching areas needs signal.</p>`; return; }
+      if (!netOK()) { $("#edResults").innerHTML = `<p class="hint">Searching areas needs signal.</p>`; return; }
       try {
         const j = await inatPublic(`/places/autocomplete?q=${encodeURIComponent(q)}&per_page=6`);
         const res = (j.results || []).filter(r => r.location);
@@ -2335,8 +2727,8 @@ async function renderEdibles() {
     }, 350);
   });
   if (!place && geoAvailable()) { getPosition().then(() => { if (location.hash === "#edibles") renderEdibles(); }).catch(() => {}); }
-  if (navigator.onLine && EDIBLES.some(e => taxa[e.latin] === undefined)) taxonIds(EDIBLES).then(t => { taxa = t; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
-  if (place && navigator.onLine) {
+  if (netOK() && EDIBLES.some(e => taxa[e.latin] === undefined)) taxonIds(EDIBLES).then(t => { taxa = t; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
+  if (place && netOK()) {
     areaWeather(place).then(w => { wx = w; if (document.body.contains($("#edList"))) draw(); }).catch(() => {});
     areaCounts(place, msg => { const s = $("#edStatus"); if (s) s.textContent = msg; })
       .then(c => { const tot = Object.values(c).reduce((a, arr) => a + arr.reduce((x, y) => x + y, 0), 0); if (tot) counts = c; else noData = true; if (document.body.contains($("#edList"))) draw(); })
@@ -2407,7 +2799,7 @@ function renderSeason() {
     const msg = $("#fruitMsg"); if (!msg) return;
     const cands = fruitingCandidates();
     if (!cands.length) { msg.textContent = "When a mushroom spot you logged in an earlier year comes back into season, it's checked for rain here. Nothing is in season yet."; $("#fruitList").innerHTML = ""; return; }
-    if (!navigator.onLine && !lsGet("fruiting", null)) { msg.textContent = "Needs signal to check recent rain at your spots."; return; }
+    if (!netOK() && !lsGet("fruiting", null)) { msg.textContent = "Needs signal to check recent rain at your spots."; return; }
     try {
       const r = await checkFruiting(force);
       const hits = (r && r.hits || []).map(h => ({ ...h, f: finds.find(x => x.id === h.id) })).filter(h => h.f);
@@ -2557,7 +2949,7 @@ async function exportBackup() {
     const rec = await store.get("photos", p.key).catch(() => null);
     if (rec) photos[p.key] = typeof rec === "string" ? rec : await blobToDataURL(rec);
   }
-  const json = JSON.stringify({ app: "spore-and-leaf", version: 1, exportedAt: new Date().toISOString(), finds, photos });
+  const json = JSON.stringify({ app: "spore-and-leaf", version: 1, exportedAt: new Date().toISOString(), finds, photos, trips: lsGet("trips", []) });
   const ok = await saveFile(`spore-and-leaf-backup-${stamp()}.json`, json, "application/json");
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
@@ -2575,6 +2967,7 @@ async function importBackup(file) {
     if (j.app !== "spore-and-leaf" || !Array.isArray(j.finds)) throw new Error("That file isn't a Spore & Leaf backup.");
     const have = new Set(finds.map(f => f.id));
     let added = 0;
+    if (Array.isArray(j.trips)) { const mine = lsGet("trips", []); const ids = new Set(mine.map(t => t.id)); saveTrips([...mine, ...j.trips.filter(t => !ids.has(t.id))]); }
     for (const f of j.finds) {
       if (have.has(f.id)) continue;
       const nf = normalise(f);
@@ -2609,6 +3002,10 @@ async function renderSettings() {
   const hasEx = finds.some(f => f.sample);
   main.innerHTML = `<div class="wrap view"><div class="settings-list">
     <a class="banner danger" href="#safety" style="text-decoration:none"><svg><use href="#i-warn"/></svg><div class="grow"><b>Safety first.</b> Never eat anything based on this app. Read the safety notes.</div></a>
+    <div class="panel"><label class="switch" for="campMode"><span><h3>Camping mode</h3><p>Makes the battery last as long as possible.</p></span><input type="checkbox" id="campMode" ${settings.camp ? "checked" : ""}></label>
+      <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on.</li></ul></div>
+    <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
     <div class="panel"><h3>iNaturalist</h3>
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
@@ -2631,7 +3028,7 @@ async function renderSettings() {
       <div id="pinSetBox" hidden class="settings-list"><input type="password" inputmode="numeric" id="pin1" placeholder="New PIN, 4 to 8 digits" maxlength="8" autocomplete="new-password"><input type="password" inputmode="numeric" id="pin2" placeholder="Same PIN again" maxlength="8" autocomplete="new-password"><div class="btn-row"><button class="btn small primary" type="button" id="pinSave">Save PIN</button></div></div></div>
     <div class="panel"><h3>Share with a buddy</h3><p>Send finds as a file by message, email or Drive. Your buddy opens it here with Open a shared file. Each send is a snapshot. Send again to share changes.</p>
       <div class="field"><label for="buddyName">Your name, shown to your buddy</label><input type="text" id="buddyName" value="${esc(lsGet("buddyName", ""))}" placeholder="e.g. Henry"></div>
-      <div class="field"><label for="shareWhich">Which finds</label><select id="shareWhich"><option value="all">All my finds</option><option value="mushroom">Mushrooms only</option><option value="plant">Plants only</option>${[...new Set(finds.flatMap(f => f.tags))].sort().map(t => `<option value="tag:${esc(t)}">Tagged #${esc(t)}</option>`).join("")}</select></div>
+      <div class="field"><label for="shareWhich">Which finds</label><select id="shareWhich"><option value="all">All my finds</option><option value="mushroom">Mushrooms only</option><option value="plant">Plants only</option><option value="edible">Marked edible</option>${tripList().map(t => `<option value="trip:${esc(t.id)}">Trip: ${esc(t.name)}</option>`).join("")}</select></div>
       <label class="switch" for="shareBlur"><span>Hide exact spots (rounds to about 1 km)</span><input type="checkbox" id="shareBlur" checked></label>
       <div class="btn-row"><button class="btn small primary" type="button" id="shareBtnAll"><svg><use href="#i-share"/></svg>Share finds</button><label class="btn small ghost" for="sharedIn">Open a shared file</label></div>
       <input class="sr" type="file" id="sharedIn" accept="application/json,.json"></div>
@@ -2647,6 +3044,8 @@ async function renderSettings() {
     ${hasEx ? `<div class="panel"><h3>Example finds</h3><p>Three examples show how the log looks.</p><div class="btn-row"><button class="btn small" type="button" id="clrEx">Remove examples</button></div></div>` : ""}
     <div class="panel"><h3>Where your log is kept</h3><p>Everything stays on this phone, in this browser. Nothing is uploaded. Clearing the browser's site data deletes the log, so save a backup now and then.</p></div>
   </div></div>`;
+  $("#campMode").addEventListener("change", e => { settings.camp = e.target.checked; lsSet("camp", settings.camp); applyModes(); restartTrailWatch(); toast(settings.camp ? "Camping mode on" : "Camping mode off"); if (!settings.camp) inatProcess(); });
+  $("#nightMode").addEventListener("change", e => { settings.night = e.target.checked; lsSet("night", settings.night); applyModes(); });
   $("#fieldMode").addEventListener("change", e => { settings.field = e.target.checked; lsSet("field", settings.field); document.body.classList.toggle("field", settings.field); });
   // iNaturalist
   const ig = $("#inatGeo"); if (ig) { ig.value = lsGet("inatGeo", "obscured"); ig.addEventListener("change", () => lsSet("inatGeo", ig.value)); }
@@ -2676,7 +3075,7 @@ async function renderSettings() {
   $("#shareBtnAll").addEventListener("click", () => {
     lsSet("buddyName", $("#buddyName").value.trim());
     const w = $("#shareWhich").value;
-    const list = finds.filter(f => !f.sample && !f.sharedFrom && (w === "all" || (w.startsWith("tag:") ? f.tags.includes(w.slice(4)) : f.type === w)));
+    const list = finds.filter(f => !f.sample && !f.sharedFrom && (w === "all" || (w.startsWith("trip:") ? f.tripId === w.slice(5) : w === "edible" ? f.edibility === "edible" : f.type === w)));
     sendShare(list, $("#shareBlur").checked);
   });
   $("#sharedIn").addEventListener("change", async e => { const file = e.target.files && e.target.files[0]; e.target.value = ""; if (file) { await importBackup(file); renderSettings(); } });
@@ -2698,7 +3097,8 @@ async function renderSettings() {
   try { await seedExamples(); } catch (e) {}
   await loadFinds();
   route();
-  if (geoAvailable()) getPosition().then(() => { const el = $("#sunLine"); if (el) el.innerHTML = sunsetHTML(); }).catch(() => {});
+  // One fix at start for sorting and sunset, skipped in camping mode when a recent one is known.
+  if (geoAvailable() && !(settings.camp && lastLoc && Date.now() - lastLoc.ts < 6 * 3600000)) getPosition().then(() => { const el = $("#sunLine"); if (el) el.innerHTML = sunsetHTML(); }).catch(() => {});
   if (activeTrail) watchTrail();
   if (new URLSearchParams(location.search).get("code")) inatFinishSignIn().then(() => { route(); inatProcess(); });
   else setTimeout(inatProcess, 1500);

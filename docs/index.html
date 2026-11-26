@@ -220,6 +220,12 @@ input[type="file"].sr { opacity: 0; }
 .panel h3 { font-size: 18px; }
 .panel p { margin: 0; color: var(--muted); font-size: 14px; }
 
+/* Camping mode: pure black for OLED screens, and no motion. */
+body.camp { --bg: #000; --surface: #0a0e0c; --surface-2: #111614; --line: #1e2824; background: #000; }
+body.camp *, body.camp *::before, body.camp *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+/* Red night light: multiplying by red keeps only the red channel, maps and photos included. */
+body.night::after { content: ""; position: fixed; inset: 0; background: #c40000; mix-blend-mode: multiply; pointer-events: none; z-index: 2147483647; }
+#nightBtn[aria-pressed="true"] { color: #ff5a4a; }
 .toast { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-weight: 700; z-index: 50; font-size: 15px; max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
 
 /* Search, tags, quick log */
@@ -233,6 +239,7 @@ input[type="file"].sr { opacity: 0; }
 .quick .qi svg { width: 26px; height: 26px; }
 .quick b { font-family: var(--font-display); font-size: 19px; display: block; }
 .quick span { color: var(--muted); font-size: 14px; }
+.quick b { color: var(--fg); }
 .badge-todo { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; color: var(--bg); background: var(--shroom); border-radius: 4px; padding: 1px 6px; }
 .badge-rv { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; color: var(--plant); border: 1px solid color-mix(in srgb, var(--plant) 50%, transparent); border-radius: 4px; padding: 0 5px; }
 
@@ -308,6 +315,8 @@ body.field .quick .qi { width: 64px; height: 64px; }
     <symbol id="i-back" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 5 8 12l7 7"/></symbol>
     <symbol id="i-warn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 2.8 19.5h18.4L12 3.5Z"/><path d="M12 10v4.2M12 17.2v.1"/></g></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></g></symbol>
     <symbol id="i-cal" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></g></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></g></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path fill="currentColor" d="M13 2 4 14h6.5L9.5 22 20 9.5h-6.6L13 2Z"/></symbol>
@@ -323,6 +332,7 @@ body.field .quick .qi { width: 64px; height: 64px; }
     <svg class="brand-mark" id="brandMark" viewBox="0 0 32 32" aria-hidden="true"><path fill="#e9a75e" d="M16 4C9 4 4 8.8 4 13.8c0 1.2.9 2.2 2.1 2.2h19.8c1.2 0 2.1-1 2.1-2.2C28 8.8 23 4 16 4Z"/><circle cx="11" cy="10" r="1.6" fill="#0f1513" opacity=".5"/><circle cx="19.5" cy="8.6" r="1.2" fill="#0f1513" opacity=".5"/><path fill="#ede6d8" d="M13 17h6l.8 9a2 2 0 0 1-2 2.2h-3.6a2 2 0 0 1-2-2.2L13 17Z"/><path fill="#93bf9d" d="M22.5 28c0-3.6 2.4-6.2 6-6.2 0 3.6-2.4 6.2-6 6.2Z"/></svg>
     <h1 id="title">Spore &amp; Leaf</h1>
     <span id="topActions"></span>
+    <button class="icon-btn" id="nightBtn" type="button" aria-label="Red night light" aria-pressed="false"><svg><use href="#i-moon"/></svg></button>
   </div>
 </header>
 
