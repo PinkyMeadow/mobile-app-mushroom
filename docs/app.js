@@ -161,14 +161,12 @@ const LOOKALIKES = [
     ["Star of Bethlehem and other bulbs", "toxic", "No onion or garlic smell. Smell every plant."]] }
 ];
 const SCALE_REFS = [
-  ["card", "Credit, debit or gift card, long edge", 85.6], ["cardS", "Credit, debit or gift card, short edge", 53.98],
+  ["tape", "Measuring tape or ruler: tap two marks", null],
+  ["ruler", "Ruler, 0 to 10 cm", 100],
+  ["bic", "Standard lighter (BIC Classic), height", 81],
+  ["card", "Credit or debit card, long edge", 85.6], ["cardS", "Credit or debit card, short edge", 53.98],
   ["cad200", "Canadian toonie ($2)", 28.0], ["cad100", "Canadian loonie ($1)", 26.5], ["cad25", "Canadian quarter", 23.88],
-  ["cad5", "Canadian nickel", 21.2], ["cad10", "Canadian dime", 18.03], ["cad1", "Canadian penny", 19.05],
-  ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05],
-  ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
-  ["bic", "Standard lighter (BIC Classic), height", 81], ["bicW", "Standard lighter (BIC Classic), width", 25], ["bicMini", "Mini lighter (BIC Mini), height", 63],
-  ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10],
-  ["tape", "Measuring tape or ruler: tap two marks", null]
+  ["cad5", "Canadian nickel", 21.2], ["cad10", "Canadian dime", 18.03]
 ];
 function suggestLookalikes(text) {
   const t = String(text || "").toLowerCase();
@@ -3075,7 +3073,7 @@ function drawCalendar(kind) {
 function openScaleSheet(src, onUse) {
   const bg = document.createElement("div");
   bg.className = "sheet-bg";
-  const refId = lsGet("scaleRef", "card");
+  const refId = SCALE_REFS.some(r => r[0] === lsGet("scaleRef", "tape")) ? lsGet("scaleRef", "tape") : "tape";
   bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="scTitle" style="overflow-y:auto">
     <h2 id="scTitle">Measure from the photo</h2>
     <div class="field"><label for="scRef">What's in the photo for scale?</label><select id="scRef">${SCALE_REFS.map(([id, l, mm]) => `<option value="${id}" ${id === refId ? "selected" : ""}>${esc(l)}${mm ? ` (${mm >= 100 ? mm / 10 + " cm" : mm + " mm"})` : ""}</option>`).join("")}</select></div>
@@ -3088,13 +3086,18 @@ function openScaleSheet(src, onUse) {
         <p class="hint" id="tickMsg" style="margin:0"></p></details>
     </div>
     <p class="hint" id="scStep" style="margin:0;color:var(--fg)"></p>
-    <canvas id="scCanvas" style="width:100%;border-radius:var(--r-md);touch-action:none;background:var(--surface-2);display:block"></canvas>
+    <div id="scWrap" style="flex:none;position:relative;overflow:hidden;border-radius:var(--r-md);touch-action:none;background:var(--surface-2)">
+      <canvas id="scCanvas" style="width:100%;display:block;transform-origin:0 0"></canvas>
+      <canvas id="scLoupe" width="240" height="240" style="position:absolute;width:120px;height:120px;border-radius:50%;border:3px solid #fff;box-shadow:0 4px 16px rgb(0 0 0 / .5);pointer-events:none;display:none"></canvas>
+      <div style="position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:6px"><button type="button" class="icon-btn" id="zIn" aria-label="Zoom in" style="background:rgb(0 0 0 / .55);font-size:22px;font-weight:700">+</button><button type="button" class="icon-btn" id="zOut" aria-label="Zoom out" style="background:rgb(0 0 0 / .55);font-size:22px;font-weight:700">−</button></div>
+    </div>
+    <p class="hint" style="margin:0">Pinch or use + to zoom, drag with one finger to move around. Tap to place a point, then drag a point to fine-tune it; a magnifier shows exactly where it sits.</p>
     <div class="banner warn" id="scResult" hidden></div>
     <div class="btn-row" id="scUse" hidden>
       <button class="btn small" type="button" data-use="width">Use as width</button><button class="btn small" type="button" data-use="height">Height</button><button class="btn small" type="button" data-use="length">Length</button><button class="btn small" type="button" data-use="stem">Stem height</button>
     </div>
     <div class="btn-row"><button class="btn ghost" type="button" id="scRedo">Start again</button><button class="btn primary" type="button" id="scDone" style="flex:1">Done</button></div>
-    <p class="hint" style="margin:0">Works best with the coin or card lying right next to the find, photographed from straight above or straight on.</p>
+    <p class="hint" style="margin:0">Works best with the tape, coin or card lying right next to the find, photographed from straight above or straight on.</p>
   </div>`;
   document.body.appendChild(bg);
   const cv = $("#scCanvas", bg), ctx = cv.getContext("2d");
@@ -3113,9 +3116,10 @@ function openScaleSheet(src, onUse) {
   function draw() {
     if (!img.naturalWidth) return;
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    const r = Math.max(6, cv.width / 90), lw = Math.max(2, cv.width / 300);
+    const per = cv.width / (cv.getBoundingClientRect().width || cv.width); // canvas px per screen px
+    const r = 11 * per, lw = Math.max(1, 2.5 * per);
     const seg = (p, q, col) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); };
-    const dot = (p, col) => { ctx.fillStyle = col; ctx.strokeStyle = "#000"; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); };
+    const dot = (p, col) => { ctx.fillStyle = col + "99"; ctx.strokeStyle = "#000"; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.strokeStyle = "#fff"; ctx.beginPath(); ctx.moveTo(p[0] - r * 0.6, p[1]); ctx.lineTo(p[0] + r * 0.6, p[1]); ctx.moveTo(p[0], p[1] - r * 0.6); ctx.lineTo(p[0], p[1] + r * 0.6); ctx.stroke(); };
     if (pts.length >= 2) seg(pts[0], pts[1], "#7fb5e6");
     if (pts.length >= 4) seg(pts[2], pts[3], "#e9a75e");
     pts.forEach((p, i) => dot(p, i < 2 ? "#7fb5e6" : "#e9a75e"));
@@ -3180,12 +3184,65 @@ function openScaleSheet(src, onUse) {
   }
   img.onload = () => { const w = Math.min(1600, img.naturalWidth); cv.width = w; cv.height = Math.round(img.naturalHeight * w / img.naturalWidth); draw(); };
   img.src = src;
-  cv.addEventListener("pointerdown", e => {
-    const r = cv.getBoundingClientRect();
-    const p = [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
-    if (pts.length >= 4) pts = pts.slice(0, 2);
-    pts.push(p); draw(); compute(); step();
+  // Zoom and pan with a CSS transform; points stay in image (canvas) coordinates.
+  const wrap = $("#scWrap", bg), loupe = $("#scLoupe", bg), lctx = loupe.getContext("2d");
+  let k = 1, tx = 0, ty = 0;
+  const clampView = () => { const W = wrap.clientWidth, H = wrap.clientHeight; k = Math.max(1, Math.min(8, k)); tx = Math.min(0, Math.max(W - W * k, tx)); ty = Math.min(0, Math.max(H - H * k, ty)); cv.style.transform = `translate(${tx}px,${ty}px) scale(${k})`; draw(); };
+  const zoomAt = (f, cx, cy) => { const nk = Math.max(1, Math.min(8, k * f)); tx = cx - (cx - tx) * nk / k; ty = cy - (cy - ty) * nk / k; k = nk; clampView(); };
+  $("#zIn", bg).addEventListener("click", () => zoomAt(1.6, wrap.clientWidth / 2, wrap.clientHeight / 2));
+  $("#zOut", bg).addEventListener("click", () => zoomAt(1 / 1.6, wrap.clientWidth / 2, wrap.clientHeight / 2));
+  const toImg = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  const toScreen = p => { const r = cv.getBoundingClientRect(); return [r.left + p[0] * r.width / cv.width, r.top + p[1] * r.height / cv.height]; };
+  function showLoupe(e, p) {
+    const wr = wrap.getBoundingClientRect(), per = cv.width / cv.getBoundingClientRect().width, R = 60 * per / 3; // 3x the on-screen size
+    lctx.clearRect(0, 0, 240, 240); lctx.drawImage(cv, p[0] - R, p[1] - R, R * 2, R * 2, 0, 0, 240, 240);
+    lctx.strokeStyle = "#fff"; lctx.lineWidth = 2; lctx.beginPath(); lctx.moveTo(120, 96); lctx.lineTo(120, 144); lctx.moveTo(96, 120); lctx.lineTo(144, 120); lctx.stroke();
+    let x = e.clientX - wr.left - 60, y = e.clientY - wr.top - 150;
+    if (y < 4) y = e.clientY - wr.top + 40;
+    loupe.style.left = Math.max(4, Math.min(wr.width - 124, x)) + "px"; loupe.style.top = y + "px"; loupe.style.display = "block";
+  }
+  const touches = new Map();
+  let drag = null; // {type: "point", i} | {type: "pan", x, y} | {type: "tap", x, y}
+  let pinch = null;
+  wrap.addEventListener("pointerdown", e => {
+    if (e.target.closest("button")) return;
+    wrap.setPointerCapture(e.pointerId);
+    touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (touches.size === 2) {
+      const [a, b] = [...touches.values()], wr = wrap.getBoundingClientRect();
+      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), cx: (a[0] + b[0]) / 2 - wr.left, cy: (a[1] + b[1]) / 2 - wr.top };
+      drag = null; loupe.style.display = "none"; return;
+    }
+    // Grab the nearest point within 32 screen px, so handles are easy to hit.
+    let best = -1, bd = 32;
+    pts.forEach((p, i) => { const q = toScreen(p), d = Math.hypot(q[0] - e.clientX, q[1] - e.clientY); if (d < bd) { bd = d; best = i; } });
+    if (best >= 0) { drag = { type: "point", i: best, ox: pts[best][0] - toImg(e)[0], oy: pts[best][1] - toImg(e)[1] }; showLoupe(e, pts[best]); }
+    else drag = { type: "tap", x: e.clientX, y: e.clientY };
   });
+  wrap.addEventListener("pointermove", e => {
+    if (!touches.has(e.pointerId)) return;
+    touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pinch && touches.size === 2) {
+      const [a, b] = [...touches.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      zoomAt(d / pinch.d, pinch.cx, pinch.cy); pinch.d = d; return;
+    }
+    if (!drag) return;
+    if (drag.type === "point") { const q = toImg(e); pts[drag.i] = [q[0] + drag.ox, q[1] + drag.oy]; draw(); compute(); showLoupe(e, pts[drag.i]); return; }
+    if (drag.type === "tap" && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 8) drag = { type: "pan", x: e.clientX, y: e.clientY };
+    if (drag.type === "pan") { tx += e.clientX - drag.x; ty += e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; clampView(); }
+  });
+  const end = e => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinch = null;
+    loupe.style.display = "none";
+    if (drag && drag.type === "tap" && touches.size === 0) {
+      const p = toImg(e);
+      if (pts.length >= 4) pts = pts.slice(0, 2);
+      pts.push(p); auto = pts.length > 2 ? auto : null; draw(); compute(); step();
+    }
+    if (touches.size === 0) drag = null;
+  };
+  wrap.addEventListener("pointerup", end); wrap.addEventListener("pointercancel", e => { touches.delete(e.pointerId); drag = null; pinch = null; loupe.style.display = "none"; });
   $("#scRef", bg).addEventListener("change", e => { lsSet("scaleRef", e.target.value); auto = null; syncTape(); draw(); compute(); step(); });
   $("#tapeUnit", bg).value = lsGet("tapeUnit", settings.units === "in" ? "in" : "cm");
   $("#tickUnit", bg).value = settings.units === "in" ? "1.5875" : "1";
@@ -3194,7 +3251,7 @@ function openScaleSheet(src, onUse) {
   $("#tickUnit", bg).addEventListener("change", () => { if (auto) findTicks(); });
   $("#tickFind", bg).addEventListener("click", findTicks);
   syncTape();
-  $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; $("#tickMsg", bg).textContent = ""; draw(); compute(); step(); });
+  $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; k = 1; tx = 0; ty = 0; clampView(); $("#tickMsg", bg).textContent = ""; draw(); compute(); step(); });
   $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null) { onUse(b.dataset.use, lastCm); toast("Measurement added"); } });
   const close = () => bg.remove();
   $("#scDone", bg).addEventListener("click", close);
