@@ -2452,7 +2452,7 @@ async function inatUpload(f) {
   const notes = [f.description, f.colourNote && "Colour: " + f.colourNote, (f.colours || []).length && "Colours: " + f.colours.join(", "),
     f.spore && "Spore print: " + f.spore, f.gills && "Underside: " + f.gills, f.smell.length && "Smell: " + f.smell.join(", "), f.texture.length && "Texture: " + f.texture.join(", "),
     f.bruise && "Bruising: " + f.bruise + (f.bruiseNote ? " (" + f.bruiseNote + ")" : ""), f.substrate && "Growing on: " + f.substrate, f.habitat.length && "Habitat: " + f.habitat.join(", "), f.trees && "Nearby: " + f.trees,
-    f.width != null && `Cap/width ${(+f.width).toFixed(1)} cm`, f.stem != null && `Stem ${(+f.stem).toFixed(1)} cm`, "Logged with Spore & Leaf."].filter(Boolean).join("\n");
+    f.width != null && `Cap/width ${(+f.width).toFixed(1)} cm`, f.stem != null && `Stem ${(+f.stem).toFixed(1)} cm`].filter(Boolean).join("\n");
   // Remember the observation as soon as it exists, so a dropped connection mid-upload
   // carries on with the photos next time instead of posting the find twice.
   if (!f.inatUuid) { f.inatUuid = (crypto.randomUUID ? crypto.randomUUID() : uid()); await store.put("finds", f); }
