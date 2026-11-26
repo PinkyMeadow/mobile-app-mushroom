@@ -538,6 +538,8 @@ async function route() {
   if (h === "new") return renderForm(null);
   if (h.startsWith("edit-")) return renderForm(h.slice(5));
   if (h.startsWith("find-")) return renderDetail(h.slice(5));
+  if (h === "species") return renderSpeciesList();
+  if (h.startsWith("species-")) return renderSpecies(decodeURIComponent(h.slice(8)));
   if (h === "map") return renderMap();
   if (h === "season") return renderSeason();
   if (h === "edibles") return renderEdibles();
@@ -727,6 +729,95 @@ function renderResults() {
 const measureVal = cm => cm == null ? "—" : `${toDisp(cm)}<small> ${unitLabel()}</small>`;
 const edibLabel = v => (EDIBILITY.find(e => e[0] === v) || EDIBILITY[0])[1];
 function chipSwatch(name, list) { const s = list.find(x => x[0] === name); return `<span class="chip" style="cursor:default"><span class="sw" style="background:${s ? s[1] : "transparent"}"></span>${esc(name)}</span>`; }
+
+/* ============================================================
+   Species pages: every find with the same name, together.
+   ============================================================ */
+function speciesKey(f) { return f.name ? f.name.replace(/\s*\(example\)$/i, "").toLowerCase().trim() : ""; }
+function speciesHref(f) { return "#species-" + encodeURIComponent(speciesKey(f)); }
+function speciesGroups() {
+  const g = new Map();
+  for (const f of finds) {
+    const k = speciesKey(f); if (!k) continue;
+    if (!g.has(k)) g.set(k, { key: k, name: f.name.replace(/\s*\(example\)$/i, ""), type: f.type, list: [] });
+    g.get(k).list.push(f);
+  }
+  for (const v of g.values()) v.list.sort((a, b) => new Date(a.foundAt) - new Date(b.foundAt));
+  return [...g.values()];
+}
+// Match a find's name to the In season guide, by common or Latin name.
+function guideFor(name) {
+  const n = (name || "").toLowerCase();
+  return EDIBLES.find(e => n.includes(e.latin.toLowerCase()) || n.includes(e.name.toLowerCase().replace(/s$/, "").split(" (")[0])) || null;
+}
+function renderSpeciesList() {
+  setChrome({ title: "Species", back: true });
+  const gs = speciesGroups().sort((a, b) => b.list.length - a.list.length || a.name.localeCompare(b.name));
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">Every named find, grouped by name. Unnamed finds aren't here until you name them.</p>
+    <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="spFilter" placeholder="Filter species" autocomplete="off" aria-label="Filter species"></div>
+    <div class="list" id="spList" style="grid-template-columns:1fr"></div>
+  </div>`;
+  const draw = q => {
+    const rows = gs.filter(g => !q || g.name.toLowerCase().includes(q));
+    $("#spList").innerHTML = rows.length ? rows.map(g => { const last = g.list[g.list.length - 1]; return `<a class="card" href="#species-${encodeURIComponent(g.key)}">
+      <img class="thumb" data-photo="${esc(cover([...g.list].reverse().find(f => f.photos.length) || last) || "")}" alt="">
+      <div class="card-body"><div class="card-title">${esc(g.name)}</div>
+        <div class="meta"><span class="dot ${g.type}"></span><span>${g.type === "plant" ? "Plant" : "Mushroom"}</span><span class="sep num">${g.list.length} ${g.list.length === 1 ? "find" : "finds"}</span></div>
+        <div class="meta num"><span>Last seen ${esc(fmtDate(last.foundAt))}</span></div></div></a>`; }).join("") : `<p class="hint">No species match.</p>`;
+    hydrateThumbs($("#spList"));
+  };
+  draw("");
+  $("#spFilter").addEventListener("input", e => draw(e.target.value.trim().toLowerCase()));
+}
+async function renderSpecies(key) {
+  const g = speciesGroups().find(x => x.key === key);
+  if (!g) { location.hash = "species"; return; }
+  setChrome({ title: g.type === "plant" ? "Plant" : "Mushroom", back: true });
+  const first = g.list[0], last = g.list[g.list.length - 1];
+  const months = Array(12).fill(0); g.list.forEach(f => months[new Date(f.foundAt).getMonth()]++);
+  const mx = Math.max(1, ...months);
+  const years = [...new Set(g.list.map(f => new Date(f.foundAt).getFullYear()))].sort();
+  const spots = g.list.filter(f => f.lat != null);
+  const near = lastLoc && spots.length ? spots.map(f => ({ f, d: haversine(lastLoc, f) })).sort((a, b) => a.d - b.d)[0] : null;
+  const photos = g.list.flatMap(f => f.photos.map(p => ({ f, p }))).reverse();
+  const col = g.type === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
+  const guide = guideFor(g.name);
+  const conf = g.list.filter(f => f.inat && f.inat.quality === "research").length;
+  main.innerHTML = `<div class="wrap view">
+    <div class="detail-head">
+      <span class="type-pill ${g.type}" style="align-self:flex-start"><span class="dot ${g.type}"></span>${g.type === "plant" ? "Plant" : "Mushroom"}</span>
+      <h2>${esc(g.name)}</h2>
+    </div>
+    <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+      <div class="fact"><span class="eyebrow">Finds</span><span class="v num">${g.list.length}</span></div>
+      <div class="fact"><span class="eyebrow">First seen</span><span class="v num">${esc(fmtDate(first.foundAt, { day: "numeric", month: "short", year: "numeric" }))}</span></div>
+      <div class="fact"><span class="eyebrow">Last seen</span><span class="v num">${esc(fmtDate(last.foundAt, { day: "numeric", month: "short", year: "numeric" }))}</span></div>
+      <div class="fact"><span class="eyebrow">Spots</span><span class="v num">${spots.length}${near ? `<small> · nearest ${esc(fmtDist(near.d))}</small>` : ""}</span></div>
+      ${years.length > 1 ? `<div class="fact"><span class="eyebrow">Years found</span><span class="v num">${esc(years.join(", "))}</span></div>` : ""}
+      ${conf ? `<div class="fact"><span class="eyebrow">iNat confirmed</span><span class="v num">${conf}</span></div>` : ""}
+    </div>
+    <div class="panel" style="gap:6px"><h3>Months you've found it</h3>
+      <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;align-items:end;height:40px">${months.map((n, i) => `<span title="${MONTHS[i]}: ${n} ${n === 1 ? "find" : "finds"}" style="display:block;height:${n ? 8 + 32 * n / mx : 3}px;border-radius:3px;background:${n ? col : "var(--surface-2)"}"></span>`).join("")}</div>
+      <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map(x => `<span>${x[0]}</span>`).join("")}</div>
+      <p class="hint" style="margin:0">${(() => { const r = monthRanges(months.map((n, i) => n ? i : -1).filter(i => i >= 0)); return r ? `Found in ${esc(r)}.` : ""; })()}</p>
+    </div>
+    ${photos.length ? `<div class="section"><h3>Photos <span class="num" style="color:var(--muted);font-weight:400">${photos.length}</span></h3>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">${photos.slice(0, 30).map(({ f, p }) => `<a href="#find-${esc(f.id)}" style="display:block"><img data-photo="${esc(p.key)}" alt="${esc(p.label || g.name)}, ${esc(fmtDate(f.foundAt))}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;background:var(--surface-2);display:block"></a>`).join("")}</div>
+      ${photos.length > 30 ? `<p class="hint">Showing the latest 30.</p>` : ""}</div>` : ""}
+    ${spots.length ? `<div class="section"><h3>Where you've found it</h3><div class="mini-map" id="spMap" style="height:260px"></div></div>` : ""}
+    ${guide && EDIBLE_ID[guide.id] ? `<div class="panel" style="gap:6px"><h3>How to identify ${esc(guide.name.toLowerCase())}</h3><ul style="margin:0;padding-left:20px;display:grid;gap:3px">${EDIBLE_ID[guide.id].map(x => `<li>${esc(x)}</li>`).join("")}</ul><p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(guide.look)}</p><p class="hint" style="margin:0">Never eat anything based on this app. Have it checked in person by an expert.</p></div>` : ""}
+    <div class="section"><h3>All finds</h3><div class="list" id="spFinds">${[...g.list].reverse().map(cardHTML).join("")}</div></div>
+  </div>`;
+  hydrateThumbs(main);
+  if (spots.length && hasLeaflet) {
+    const m = makeMap($("#spMap"), [spots[0].lat, spots[0].lng], 14, { dragging: !L.Browser.mobile, scrollWheelZoom: false });
+    if (m) {
+      spots.forEach(f => L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(m).bindPopup(`<a href="#find-${esc(f.id)}">${esc(fmtDate(f.foundAt))}</a>`));
+      if (spots.length > 1) m.fitBounds(spots.map(f => [f.lat, f.lng]), { padding: [30, 30], maxZoom: 15 });
+    }
+  }
+}
 async function renderDetail(id) {
   const f = finds.find(x => x.id === id);
   if (!f) { location.hash = "log"; return; }
@@ -754,6 +845,7 @@ async function renderDetail(id) {
     <div class="detail-head">
       <div class="btn-row" style="gap:8px"><span class="type-pill ${f.type}"><span class="dot ${f.type}"></span>${isShroom ? "Mushroom" : "Plant"}${f.sample ? " · Example" : ""}</span><span class="edib ${esc(f.edibility)}">${esc(edibLabel(f.edibility))}</span>${f.sharedFrom ? `<span class="edib">From ${esc(f.sharedFrom)}</span>` : ""}</div>
       <h2>${esc(f.name || "Not yet identified")}</h2>
+      ${f.name ? (() => { const n = finds.filter(x => speciesKey(x) === speciesKey(f)).length; return `<a href="${speciesHref(f)}" class="hint" style="color:var(--plant);font-weight:700;text-decoration:none">${n > 1 ? `See all ${n} finds of this species` : "Species page"} ›</a>`; })() : ""}
       <div class="meta num" style="font-size:15px"><span>${esc(fmtDate(f.foundAt, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</span><span class="sep">${esc(fmtTime(f.foundAt))}</span><span class="sep">${esc(timeOfDay(new Date(f.foundAt)))}</span></div>
       ${f.tags.length ? `<div class="chips" style="gap:6px">${f.tags.map(t => `<span class="tag" style="cursor:default">#${esc(t)}</span>`).join("")}</div>` : ""}
     </div>
@@ -2306,7 +2398,8 @@ function renderSeason() {
     </div>
 
     <div class="panel"><h3>Most found</h3>
-      ${top.length ? `<ul class="rank">${top.map(([n, v]) => `<li><span>${esc(n)}</span><span class="num" style="color:var(--muted)">${v.n}</span><span class="track"><i style="width:${v.n / topMax * 100}%;background:var(--chart-${v.type === "plant" ? "plant" : "shroom"})"></i></span></li>`).join("")}</ul>` : `<p>Name your finds to see which you come across most.</p>`}
+      ${top.length ? `<ul class="rank">${top.map(([n, v]) => `<li><a href="#species-${encodeURIComponent(n.toLowerCase().trim())}" style="color:inherit;text-decoration:none">${esc(n)} ›</a><span class="num" style="color:var(--muted)">${v.n}</span><span class="track"><i style="width:${v.n / topMax * 100}%;background:var(--chart-${v.type === "plant" ? "plant" : "shroom"})"></i></span></li>`).join("")}</ul>` : `<p>Name your finds to see which you come across most.</p>`}
+      ${top.length ? `<a class="btn small" href="#species" style="align-self:flex-start">All species pages</a>` : ""}
     </div>
   </div>`;
   drawCalendar("all");
