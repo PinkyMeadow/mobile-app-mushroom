@@ -210,7 +210,7 @@ input[type="file"].sr { opacity: 0; }
 .progress > i { display: block; height: 100%; width: 0; background: var(--plant); transition: width .2s; }
 
 /* Sheet (modal) */
-.sheet-bg { position: fixed; inset: 0; background: rgb(0 0 0 / 0.6); z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
+.sheet-bg { position: fixed; inset: 0; background: rgb(0 0 0 / 0.6); z-index: 1500; display: flex; align-items: flex-end; justify-content: center; }
 .sheet { background: var(--surface); width: 100%; max-width: 720px; border-radius: 20px 20px 0 0; border: 1px solid var(--line); border-bottom: 0; padding: 16px max(16px, env(safe-area-inset-left, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 12px; max-height: 92dvh; }
 .sheet h2 { font-size: 22px; }
 .sheet .pick-map { height: 56dvh; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--line); background: var(--surface-2); }
@@ -226,7 +226,7 @@ body.camp *, body.camp *::before, body.camp *::after { transition: none !importa
 /* Red night light: multiplying by red keeps only the red channel, maps and photos included. */
 body.night::after { content: ""; position: fixed; inset: 0; background: #c40000; mix-blend-mode: multiply; pointer-events: none; z-index: 2147483647; }
 #nightBtn[aria-pressed="true"] { color: #ff5a4a; }
-.toast { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-weight: 700; z-index: 50; font-size: 15px; max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
+.toast { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-weight: 700; z-index: 1600; font-size: 15px; max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
 
 /* Search, tags, quick log */
 .search { position: relative; }
@@ -352,6 +352,7 @@ body.field .quick .qi { width: 64px; height: 64px; }
 <script src="vendor/leaflet.js"></script>
 <script src="vendor/leaflet-heat.js"></script>
 <script src="edibles.js"></script>
+<script src="guides.js"></script>
 <script src="app.js"></script>
 
 </body></html>

@@ -591,6 +591,11 @@ async function route() {
   if (h === "trips") return renderTrips();
   if (h.startsWith("trip-")) return renderTrip(h.slice(5));
   if (h === "import") return renderImport();
+  if (h === "guides") return renderGuides();
+  if (h.startsWith("guide-")) return renderGuide(h.slice(6));
+  if (h.startsWith("tree-")) return renderTree(h.slice(5));
+  if (h === "pack") return renderPack();
+  if (h === "camera") return renderCamera();
   if (h.startsWith("species-")) return renderSpecies(decodeURIComponent(h.slice(8)));
   if (h === "map") return renderMap();
   if (h === "season") return renderSeason();
@@ -798,6 +803,126 @@ const edibLabel = v => (EDIBILITY.find(e => e[0] === v) || EDIBILITY[0])[1];
 function chipSwatch(name, list) { const s = list.find(x => x[0] === name); return `<span class="chip" style="cursor:default"><span class="sw" style="background:${s ? s[1] : "transparent"}"></span>${esc(name)}</span>`; }
 
 
+
+/* ============================================================
+   Guides: beginner edibles, host trees and tree ID. All offline.
+   ============================================================ */
+const guideBanner = `<div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>Learn from this, but never eat from it.</b> Have every find checked in person by an expert, every time.</div></div>`;
+function renderGuides() {
+  setChrome({ title: "Guides", back: true });
+  const ed = Object.keys(GUIDES).map(id => EDIBLES.find(e => e.id === id)).filter(Boolean);
+  main.innerHTML = `<div class="wrap view">${guideBanner}
+    <div class="section"><h3>Beginner edibles</h3><p class="hint">Often taught first because their key features are distinctive. Every one still has lookalikes.</p>
+      <div class="list" style="grid-template-columns:1fr">${ed.map(e => `<a class="card" href="#guide-${e.id}" style="padding:14px"><div class="card-body"><div class="card-title">${esc(e.name)}</div><div class="meta"><i>${esc(e.latin)}</i></div><div class="hint">${esc(GUIDES[e.id].why)}</div></div></a>`).join("")}</div></div>
+    <div class="section"><h3>Tree ID</h3><p class="hint">Knowing the trees tells you where to look. Tap one for leaf, bark, shape and season, and what grows with it.</p>
+      ${["Broadleaf", "Conifer", "Habitat"].map(t => `<h4 style="margin:10px 0 6px">${t === "Habitat" ? "Other" : t + "s"}</h4><div class="chips">${TREES.filter(x => x.type === t).map(x => `<a class="chip" href="#tree-${x.id}" style="text-decoration:none">${esc(x.name)}</a>`).join("")}</div>`).join("")}</div>
+    <div class="btn-row"><a class="btn" href="#pack">Trip packing list</a></div>
+  </div>`;
+}
+function refPhotoHTML(e, h = 200) {
+  const t = lsGet("taxa2", {})[e.latin];
+  return t && t.photo ? `<figure style="margin:0"><img src="${esc(t.big || t.photo)}" alt="${esc(e.name)}, reference" style="width:100%;height:${h}px;object-fit:cover;border-radius:var(--r-md);background:var(--surface-2);display:block" onerror="this.closest('figure').remove()"><figcaption class="hint" style="font-size:11px;margin-top:4px">${esc(t.attr)}, via iNaturalist</figcaption></figure>` : "";
+}
+function renderGuide(id) {
+  const e = EDIBLES.find(x => x.id === id), g = GUIDES[id];
+  if (!e || !g) { location.hash = "guides"; return; }
+  setChrome({ title: "Guide", back: true });
+  const host = HOSTS[id];
+  const mine = finds.filter(f => guideFor(f.name) === e);
+  main.innerHTML = `<div class="wrap view">
+    <div class="detail-head"><span class="type-pill mushroom" style="align-self:flex-start"><span class="dot mushroom"></span>Mushroom</span><h2>${esc(e.name)}</h2><div class="meta"><i>${esc(e.latin)}</i></div></div>
+    ${refPhotoHTML(e, 220)}
+    ${guideBanner}
+    <p>${esc(g.why)}</p>
+    <div class="panel" style="gap:6px"><h3>Check every one of these</h3><ol style="margin:0;padding-left:22px;display:grid;gap:6px">${g.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ol>
+      ${(EDIBLE_ID[id] || []).length ? `<details><summary style="cursor:pointer;font-weight:700">More features</summary><ul style="margin:6px 0 0;padding-left:20px">${EDIBLE_ID[id].map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}</div>
+    <div class="section"><h3>Lookalikes</h3><div class="settings-list">${g.vs.map(([n, d, how]) => `<div class="panel" style="gap:6px"><div style="display:flex;justify-content:space-between;gap:10px"><b>${esc(n)}</b><span class="edib ${/deadly/i.test(d) ? "deadly" : /toxic|avoid/i.test(d) ? "toxic" : "unknown"}" style="flex:none">${esc(d)}</span></div><p style="margin:0">${esc(how)}</p></div>`).join("")}</div></div>
+    <div class="facts" style="grid-template-columns:1fr">
+      <div class="fact"><span class="eyebrow">Season</span><span class="v" style="font-size:15px">${esc(monthRanges((e.na || []).map(m => m - 1)) || "—")} in eastern and central North America</span></div>
+      ${host ? `<div class="fact"><span class="eyebrow">Where to look</span><span class="v" style="font-size:15px">${host.trees.map(t => { const tr = TREES.find(x => x.id === t); return tr ? `<a href="#tree-${t}" style="color:var(--plant)">${esc(tr.name)}</a>` : ""; }).filter(Boolean).join(", ")}${host.trees.length ? ". " : ""}${esc(host.note)}</span></div>` : ""}
+      <div class="fact"><span class="eyebrow">Picking and cooking</span><span class="v" style="font-size:15px">${esc(g.harvest)}</span></div>
+      <div class="fact"><span class="eyebrow">Keeping</span><span class="v" style="font-size:15px">${esc(g.keep)}</span></div>
+    </div>
+    ${mine.length ? `<a class="btn" href="#species-${encodeURIComponent(speciesKey(mine[0]))}">Your ${mine.length} ${mine.length === 1 ? "find" : "finds"} of this ›</a>` : ""}
+  </div>`;
+}
+function renderTree(id) {
+  const t = TREES.find(x => x.id === id);
+  if (!t) { location.hash = "guides"; return; }
+  setChrome({ title: "Tree ID", back: true });
+  const grows = EDIBLES.filter(e => HOSTS[e.id] && HOSTS[e.id].trees.includes(id));
+  main.innerHTML = `<div class="wrap view">
+    <div class="detail-head"><span class="type-pill plant" style="align-self:flex-start"><span class="dot plant"></span>${esc(t.type)}</span><h2>${esc(t.name)}</h2><div class="meta"><i>${esc(t.latin)}</i></div></div>
+    <div class="facts" style="grid-template-columns:1fr">
+      <div class="fact"><span class="eyebrow">Leaves or needles</span><span class="v" style="font-size:15px">${esc(t.leaf)}</span></div>
+      <div class="fact"><span class="eyebrow">Bark</span><span class="v" style="font-size:15px">${esc(t.bark)}</span></div>
+      <div class="fact"><span class="eyebrow">Shape and where</span><span class="v" style="font-size:15px">${esc(t.form)}</span></div>
+      <div class="fact"><span class="eyebrow">Through the seasons</span><span class="v" style="font-size:15px">${esc(t.season)}</span></div>
+      <div class="fact"><span class="eyebrow">Don't confuse with</span><span class="v" style="font-size:15px">${esc(t.look)}</span></div>
+    </div>
+    ${grows.length ? `<div class="section"><h3>Look here for</h3><div class="chips">${grows.map(e => `<a class="chip" href="${GUIDES[e.id] ? "#guide-" + e.id : "#edibles"}" style="text-decoration:none"><span class="dot ${e.kind}"></span>${esc(e.name)}</a>`).join("")}</div></div>` : ""}
+    <p class="hint">Where trees grow changes what's under them. These notes are for eastern and central Canada and the northern US.</p>
+  </div>`;
+}
+
+/* Side by side: your photo and a reference photo, with the ID checklist. */
+async function openCompare(f) {
+  const bg = document.createElement("div"); bg.className = "sheet-bg";
+  const guess = guideFor(f.name);
+  const opts = EDIBLES.map(e => `<option value="${e.id}" ${guess === e ? "selected" : ""}>${esc(e.name)}</option>`).join("");
+  bg.innerHTML = `<div class="sheet" role="dialog" aria-label="Compare photos" style="max-height:92vh;overflow:auto"><h3>Compare with a reference</h3>
+    <div class="field"><label for="cmpSel">Compare with</label><select id="cmpSel">${guess ? "" : '<option value="">Pick a species</option>'}${opts}</select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="cmpGrid"></div>
+    <div id="cmpList"></div>
+    <p class="hint">A reference photo is one example: real ones vary a lot. A match here is not an ID. Have it checked in person by an expert.</p>
+    <div class="btn-row"><button class="btn" type="button" id="cmpClose">Close</button></div></div>`;
+  document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.addEventListener("click", ev => { if (ev.target === bg) close(); });
+  $("#cmpClose", bg).addEventListener("click", close);
+  const mineURL = await photoURL(f.photos[0].key);
+  let pick = 0;
+  const draw = () => {
+    const e = EDIBLES.find(x => x.id === $("#cmpSel", bg).value);
+    const ph = f.photos[pick] || f.photos[0];
+    $("#cmpGrid", bg).innerHTML = `<figure style="margin:0"><img id="cmpMine" alt="Your photo" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:10px;background:var(--surface-2)"><figcaption class="hint" style="font-size:12px">Yours${f.photos.length > 1 ? ` · <button type="button" class="btn small ghost" id="cmpNext" style="min-height:28px;padding:0 8px">Next photo</button>` : ""}</figcaption></figure>`
+      + (e ? (() => { const t = lsGet("taxa2", {})[e.latin]; return t && t.photo ? `<figure style="margin:0"><img src="${esc(t.big || t.photo)}" alt="${esc(e.name)} reference" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:10px;background:var(--surface-2)" onerror="this.replaceWith(Object.assign(document.createElement('p'),{className:'hint',textContent:'Reference photo not saved yet. Open In season with signal once.'}))"><figcaption class="hint" style="font-size:12px">${esc(e.name)} · ${esc(t.attr)}</figcaption></figure>` : `<p class="hint">No reference photo saved for this one yet. Open In season once with signal to load them.</p>`; })() : "<span></span>");
+    photoURL(ph.key).then(u => { const im = $("#cmpMine", bg); if (im && u) im.src = u; });
+    const nx = $("#cmpNext", bg); if (nx) nx.addEventListener("click", () => { pick = (pick + 1) % f.photos.length; draw(); });
+    $("#cmpList", bg).innerHTML = e && EDIBLE_ID[e.id] ? `<div class="panel" style="gap:6px;margin-top:8px"><b>Does yours have all of these?</b>${EDIBLE_ID[e.id].map((x, i) => `<label class="switch" style="font-size:14px;gap:10px"><span>${esc(x)}</span><input type="checkbox"></label>`).join("")}<p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p></div>` : "";
+  };
+  $("#cmpSel", bg).addEventListener("change", draw);
+  draw();
+}
+
+/* Packing list, ticked off per trip. */
+function renderPack() {
+  setChrome({ title: "Packing list", back: true });
+  const done = new Set(lsGet("packDone", [])), extra = lsGet("packExtra", []);
+  const groups = [...PACK, ...(extra.length ? [["Your items", extra]] : [])];
+  const total = groups.reduce((a, g) => a + g[1].length, 0), n = groups.reduce((a, g) => a + g[1].filter(x => done.has(x)).length, 0);
+  main.innerHTML = `<div class="wrap view">
+    <p class="num"><b>${n} of ${total} packed</b></p>
+    ${groups.map(([g, items]) => `<div class="panel" style="gap:4px"><h3>${esc(g)}</h3>${items.map(x => `<label class="switch" style="font-size:15px"><span>${esc(x)}</span><span style="display:flex;gap:6px;align-items:center">${g === "Your items" ? `<button type="button" class="btn small ghost" data-rm="${esc(x)}" aria-label="Remove ${esc(x)}">×</button>` : ""}<input type="checkbox" data-item="${esc(x)}" ${done.has(x) ? "checked" : ""}></span></label>`).join("")}</div>`).join("")}
+    <div class="panel"><div class="btn-row"><input type="text" id="packNew" placeholder="Add your own item" style="flex:1"><button class="btn small plant" type="button" id="packAdd">Add</button></div></div>
+    <div class="btn-row"><button class="btn ghost" type="button" id="packReset">Untick everything for the next trip</button></div>
+  </div>`;
+  $$("[data-item]").forEach(c => c.addEventListener("change", () => { const d = new Set(lsGet("packDone", [])); c.checked ? d.add(c.dataset.item) : d.delete(c.dataset.item); lsSet("packDone", [...d]); renderPack(); }));
+  $$("[data-rm]").forEach(b => b.addEventListener("click", ev => { ev.preventDefault(); lsSet("packExtra", lsGet("packExtra", []).filter(x => x !== b.dataset.rm)); renderPack(); }));
+  $("#packAdd").addEventListener("click", () => { const v = $("#packNew").value.trim(); if (v) { lsSet("packExtra", [...lsGet("packExtra", []).filter(x => x !== v), v]); renderPack(); } });
+  $("#packReset").addEventListener("click", () => { lsSet("packDone", []); renderPack(); });
+}
+
+/* Home screen shortcut: opens on one big camera button (phones need one tap before the camera can open). */
+function renderCamera() {
+  setChrome({ title: "Quick log", back: true });
+  main.innerHTML = `<div class="wrap view" style="min-height:60vh;display:grid;place-items:center">
+    <label for="camIn" class="btn primary" style="width:min(320px,100%);min-height:180px;border-radius:28px;flex-direction:column;font-size:22px;gap:12px"><svg style="width:56px;height:56px"><use href="#i-cam"/></svg>Take a photo</label>
+    <input class="sr" type="file" id="camIn" accept="image/*" capture="environment">
+    <p class="hint" style="text-align:center">Saves the photo with location and time. Add the details later.</p>
+  </div>`;
+  $("#camIn").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) { location.hash = "log"; quickLog(f); } });
+}
 /* ============================================================
    Trips: group finds and hikes from one outing.
    ============================================================ */
@@ -838,7 +963,7 @@ async function renderTrip(id) {
       <div class="fact"><span class="eyebrow">Hiked</span><span class="v num">${esc(fmtDist(km))}</span></div>
       <div class="fact"><span class="eyebrow">Climb</span><span class="v num">${esc(fmtElev(up))}</span></div>
     </div>
-    <div class="btn-row">${live ? `<button class="btn primary" type="button" id="tripEnd">End trip</button>` : ""}<button class="btn ghost" type="button" id="tripRename">Rename</button>${loose.length ? `<button class="btn ghost" type="button" id="tripAdd">Add ${loose.length} ${loose.length === 1 ? "find" : "finds"} from these dates</button>` : ""}</div>
+    <div class="btn-row">${live ? `<button class="btn primary" type="button" id="tripEnd">End trip</button>` : ""}<a class="btn ghost" href="#pack">Packing list</a><button class="btn ghost" type="button" id="tripRename">Rename</button>${loose.length ? `<button class="btn ghost" type="button" id="tripAdd">Add ${loose.length} ${loose.length === 1 ? "find" : "finds"} from these dates</button>` : ""}</div>
     ${list.some(f => f.lat != null) || hikes.length ? `<div class="mini-map" id="tripMap" style="height:260px"></div>` : ""}
     ${names.length ? `<p><b>Found:</b> ${names.map(esc).join(", ")}</p>` : ""}
     <div class="list">${list.map(cardHTML).join("") || `<p class="hint">No finds on this trip yet.</p>`}</div>
@@ -1104,6 +1229,7 @@ async function renderDetail(id) {
     </div>
     <div class="section"><h3>Entry</h3><p class="coords num">Logged ${esc(fmtDate(f.createdAt))} at ${esc(fmtTime(f.createdAt))}${f.updatedAt && f.updatedAt !== f.createdAt ? ` · last edited ${esc(fmtDate(f.updatedAt))} at ${esc(fmtTime(f.updatedAt))}` : ""}</p></div>
     <div id="voiceBox" class="section"></div>
+    ${f.photos.length ? `<div class="btn-row"><button class="btn" type="button" id="cmpBtn"><svg><use href="#i-img"/></svg>Compare with a reference photo</button></div>` : ""}
     <div class="btn-row">${f.lat != null ? '<button class="btn plant" type="button" id="compassBtn"><svg><use href="#i-gps"/></svg>Guide me here</button>' : ""}<button class="btn" type="button" id="shareOne"><svg><use href="#i-share"/></svg>Share with a buddy</button></div>
     ${f.blurred ? `<p class="hint">${esc(f.sharedFrom || "Your buddy")} hid the exact spot, so the location is only accurate to about 1 km.</p>` : ""}
     <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Move to trash</button></div>
@@ -1119,6 +1245,7 @@ async function renderDetail(id) {
     const m = makeMap($("#miniMap"), [f.lat, f.lng], 15, { dragging: !L.Browser.mobile, scrollWheelZoom: false });
     L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(m);
   }
+  const cmp = $("#cmpBtn"); if (cmp) cmp.addEventListener("click", () => openCompare(f));
   voicePlayersHTML(f.voice).then(h => { const vb = $("#voiceBox"); if (vb && h) vb.innerHTML = `<h3>Voice notes</h3>${h}`; });
   const isb = $("#inatSync");
   if (isb) isb.addEventListener("click", async () => { isb.disabled = true; try { await inatSyncOne(f); await loadFinds(); toast("Checked iNaturalist"); renderDetail(id); } catch (e) { toast(e.message === "token_expired" ? "Your iNaturalist sign-in has expired. Reconnect under More." : "Couldn't reach iNaturalist"); isb.disabled = false; } });
@@ -2623,6 +2750,7 @@ async function renderEdibles() {
   setChrome({ title: "In season", tab: "edibles" });
   const place = edPlace();
   main.innerHTML = `<div class="wrap view">
+    <div class="btn-row"><a class="btn small" href="#guides">Beginner guides and tree ID</a><a class="btn small ghost" href="#pack">Packing list</a></div>
     <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>A guide to what to look for, not permission to eat.</b> Every one of these has lookalikes, some deadly. Have each find checked in person by an expert before eating.</div></div>
     <div class="panel" style="gap:12px">
       <div class="switch" style="align-items:flex-start"><span style="min-width:0"><span class="eyebrow">Area</span><br><b id="edPlaceName" style="font-size:18px">${esc(place ? place.name : "Choose an area")}</b></span>
@@ -2677,7 +2805,9 @@ async function renderEdibles() {
         <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} ${scope()} in ${MONTHS[m - 1]}, ${tot} all year.` : `No iNaturalist data for this one ${scope()}. ${biggerHint()}`) : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
         ${EDIBLE_ID[e.id] ? `<div><b>How to identify</b><ul style="margin:4px 0 0;padding-left:20px;display:grid;gap:3px">${EDIBLE_ID[e.id].map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
         <p style="margin:0"><b>Where:</b> ${esc(e.where)}</p>
+        ${HOSTS[e.id] ? `<p style="margin:0"><b>${e.kind === "plant" ? "Grows with" : "Host trees"}:</b> ${HOSTS[e.id].trees.length ? HOSTS[e.id].trees.map(t => { const tr = TREES.find(x => x.id === t); return tr ? `<a href="#tree-${t}" style="color:var(--plant)">${esc(tr.name)}</a>` : ""; }).join(", ") + ". " : ""}${esc(HOSTS[e.id].note)}</p>` : ""}
         <p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p>
+        ${GUIDES[e.id] ? `<a class="btn small" href="#guide-${e.id}" style="align-self:flex-start">Full beginner guide ›</a>` : ""}
       </div>`;
     };
     const legCol = edView.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
@@ -3005,7 +3135,7 @@ async function renderSettings() {
     <div class="panel"><label class="switch" for="campMode"><span><h3>Camping mode</h3><p>Makes the battery last as long as possible.</p></span><input type="checkbox" id="campMode" ${settings.camp ? "checked" : ""}></label>
       <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on.</li></ul></div>
     <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
-    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
     <div class="panel"><h3>iNaturalist</h3>
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
