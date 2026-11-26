@@ -2732,7 +2732,7 @@ const ED_RADII = [10, 25, 50, 100, 150];
 // A searched place uses its own boundary unless a radius is picked; "Near you" always uses a radius.
 function edUsesBoundary(place) { return !!(place && place.placeId && edView.useArea); }   // place: {name, lat, lng, placeId?}
 const MONTHS3 = MONTHS.map(m => m.slice(0, 3));
-function regionFor(lng) { return lng != null && lng < -30 ? "na" : "eu"; }
+function regionFor(lng) { return lng == null ? lsGet("edRegion", "na") : lng < -30 ? "na" : "eu"; }
 async function inatPublic(path) {
   const r = await fetch(INAT_API + path);
   if (!r.ok) throw new Error("inat " + r.status);
@@ -2868,19 +2868,29 @@ async function renderEdibles() {
         ? [[3, "Peak"], [2, "Common"], [1, "Possible"]].map(([L, n]) => { const r = monthRanges(lv.map((x, i) => x === L ? i : -1).filter(i => i >= 0)); return r ? `<b>${n}:</b> ${r}` : ""; }).filter(Boolean).join(" · ")
         : (() => { const r = monthRanges(lv.map((x, i) => x ? i : -1).filter(i => i >= 0)); return r ? `<b>Typical season:</b> ${r}` : ""; })();
       const tot = c ? c.reduce((x, y) => x + y, 0) : null;
-      return `<div class="panel" style="gap:8px">
-        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><b style="font-family:var(--font-display);font-size:19px">${esc(e.name)}</b><div class="hint"><i>${esc(e.latin)}</i> · <span class="dot ${e.kind}"></span> ${e.kind === "plant" ? "Plant" : "Mushroom"}</div></div>
-          ${favoured(e) ? `<span class="edib edible" style="flex:none">Weather favours it</span>` : ""}</div>
-        ${(() => { const t = taxa[e.latin]; return t && t.photo ? `<figure style="margin:0"><a href="${esc(t.url)}" target="_blank" rel="noopener"><img src="${esc(t.big || t.photo)}" alt="${esc(e.name)}" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:var(--r-md);background:var(--surface-2);display:block" onerror="this.closest('figure').remove()"></a><figcaption class="hint" style="font-size:11px;margin-top:4px">${esc(t.attr)}, via iNaturalist. A typical example: yours may look different.</figcaption></figure>` : ""; })()}
+      const tx = taxa[e.latin], g = GUIDES[e.id];
+      return `<div class="panel edcard" style="gap:8px">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          ${tx && tx.photo ? `<a href="${esc(tx.url)}" target="_blank" rel="noopener" style="flex:none"><img src="${esc(tx.photo)}" alt="${esc(e.name)}" loading="lazy" title="${esc(tx.attr)}, via iNaturalist" style="width:76px;height:76px;object-fit:cover;border-radius:12px;background:var(--surface-2);display:block" onerror="this.closest('a').remove()"></a>` : ""}
+          <div style="min-width:0;flex:1"><b style="font-family:var(--font-display);font-size:19px">${esc(e.name)}</b><div class="hint"><i>${esc(e.latin)}</i> · <span class="dot ${e.kind}"></span> ${e.kind === "plant" ? "Plant" : "Mushroom"}</div>
+            ${favoured(e) ? `<span class="edib edible" style="display:inline-block;margin-top:4px">Weather favours it</span>` : ""}</div></div>
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px">${bars}</div>
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center">${MONTHS3.map((x, i) => `<span style="${i + 1 === m ? "color:var(--fg);font-weight:700" : ""}">${x[0]}</span>`).join("")}</div>
         ${summary ? `<p class="hint" style="margin:0;color:var(--fg)">${summary}</p>` : ""}
         <p class="hint num" style="margin:0">${c ? (tot ? `${c[m - 1]} confirmed iNaturalist ${c[m - 1] === 1 ? "record" : "records"} ${scope()} in ${MONTHS[m - 1]}, ${tot} all year.` : `No iNaturalist data for this one ${scope()}. ${biggerHint()}`) : `Typical months for ${region === "na" ? "eastern and central North America" : "Britain and Europe"}.`}</p>
-        ${EDIBLE_ID[e.id] ? `<div><b>How to identify</b><ul style="margin:4px 0 0;padding-left:20px;display:grid;gap:3px">${EDIBLE_ID[e.id].map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
-        <p style="margin:0"><b>Where:</b> ${esc(e.where)}</p>
-        ${HOSTS[e.id] ? `<p style="margin:0"><b>${e.kind === "plant" ? "Grows with" : "Host trees"}:</b> ${HOSTS[e.id].trees.length ? HOSTS[e.id].trees.map(t => { const tr = TREES.find(x => x.id === t); return tr ? `<a href="#tree-${t}" style="color:var(--plant)">${esc(tr.name)}</a>` : ""; }).join(", ") + ". " : ""}${esc(HOSTS[e.id].note)}</p>` : ""}
         <p style="margin:0;color:#f6c2b6"><b>Lookalikes:</b> ${esc(e.look)}</p>
-        ${GUIDES[e.id] ? `<a class="btn small" href="#guide-${e.id}" style="align-self:flex-start">Full beginner guide ›</a>` : ""}
+        <details class="edmore"><summary>${g ? "How to identify, where, full guide" : "How to identify and where"}</summary>
+          <div class="settings-list" style="gap:10px;margin-top:8px">
+          ${tx && tx.big ? `<figure style="margin:0"><img src="${esc(tx.big)}" alt="${esc(e.name)}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:var(--r-md);background:var(--surface-2);display:block" onerror="this.closest('figure').remove()"><figcaption class="hint" style="font-size:11px;margin-top:4px">${esc(tx.attr)}, via iNaturalist. A typical example: yours may look different.</figcaption></figure>` : ""}
+          ${EDIBLE_ID[e.id] ? `<div><b>How to identify</b><ul style="margin:4px 0 0;padding-left:20px;display:grid;gap:3px">${EDIBLE_ID[e.id].map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+          <p style="margin:0"><b>Where:</b> ${esc(e.where)}</p>
+          ${HOSTS[e.id] ? `<p style="margin:0"><b>${e.kind === "plant" ? "Grows with" : "Host trees"}:</b> ${HOSTS[e.id].trees.length ? HOSTS[e.id].trees.map(t => { const tr = TREES.find(x => x.id === t); return tr ? `<a href="#tree-${t}" style="color:var(--plant)">${esc(tr.name)}</a>` : ""; }).join(", ") + ". " : ""}${esc(HOSTS[e.id].note)}</p>` : ""}
+          ${g ? `<div class="panel" style="gap:8px;background:var(--surface-2)"><h3 style="margin:0">Beginner guide</h3><p style="margin:0">${esc(g.why)}</p>
+            <div><b>Check every one of these</b><ol style="margin:4px 0 0;padding-left:22px;display:grid;gap:4px">${g.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ol></div>
+            <div><b>Lookalikes in detail</b>${g.vs.map(([n, d, how]) => `<p style="margin:6px 0 0"><b>${esc(n)}</b> <span class="edib ${/deadly/i.test(d) ? "deadly" : /toxic|avoid/i.test(d) ? "toxic" : "unknown"}">${esc(d)}</span><br>${esc(how)}</p>`).join("")}</div>
+            <p style="margin:0"><b>Picking and cooking:</b> ${esc(g.harvest)}</p><p style="margin:0"><b>Keeping:</b> ${esc(g.keep)}</p>
+            <p class="hint" style="margin:0">Never eat anything based on this app. Have it checked in person by an expert.</p></div>` : ""}
+          </div></details>
       </div>`;
     };
     const legCol = edView.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
