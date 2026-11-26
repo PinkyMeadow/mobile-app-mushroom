@@ -167,7 +167,8 @@ const SCALE_REFS = [
   ["usq", "US quarter", 24.26], ["usp", "US penny", 19.05],
   ["gbp1", "UK £1 coin", 23.43], ["gbp2p", "UK 2p coin", 25.9], ["eur1", "1 euro coin", 23.25], ["eur2", "2 euro coin", 25.75],
   ["bic", "Standard lighter (BIC Classic), height", 81], ["bicW", "Standard lighter (BIC Classic), width", 25], ["bicMini", "Mini lighter (BIC Mini), height", 63],
-  ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10]
+  ["ruler", "Ruler, 10 cm", 100], ["ruler1", "Ruler, 1 cm", 10],
+  ["tape", "Measuring tape or ruler: tap two marks", null]
 ];
 function suggestLookalikes(text) {
   const t = String(text || "").toLowerCase();
@@ -2995,7 +2996,15 @@ function openScaleSheet(src, onUse) {
   const refId = lsGet("scaleRef", "card");
   bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="scTitle" style="overflow-y:auto">
     <h2 id="scTitle">Measure from the photo</h2>
-    <div class="field"><label for="scRef">What's in the photo for scale?</label><select id="scRef">${SCALE_REFS.map(([id, l, mm]) => `<option value="${id}" ${id === refId ? "selected" : ""}>${esc(l)} (${mm >= 100 ? mm / 10 + " cm" : mm + " mm"})</option>`).join("")}</select></div>
+    <div class="field"><label for="scRef">What's in the photo for scale?</label><select id="scRef">${SCALE_REFS.map(([id, l, mm]) => `<option value="${id}" ${id === refId ? "selected" : ""}>${esc(l)}${mm ? ` (${mm >= 100 ? mm / 10 + " cm" : mm + " mm"})` : ""}</option>`).join("")}</select></div>
+    <div id="tapeBox" class="settings-list" hidden>
+      <div class="btn-row" style="align-items:flex-end"><div class="field" style="flex:1;min-width:120px"><label for="tapeLen">Distance between the two marks you tap</label><input type="number" id="tapeLen" inputmode="decimal" min="0.1" step="0.1" value="${esc(lsGet("tapeLen", 10))}"></div>
+        <select id="tapeUnit" aria-label="Unit" style="min-height:44px"><option value="cm">cm</option><option value="in">in</option></select></div>
+      <details><summary style="cursor:pointer;font-weight:700">Or let the app find the tick marks</summary>
+        <p class="hint">Tap two points along the edge of the tape where the small marks are, a few centimetres apart, then tap Find marks. It looks for evenly spaced lines between your two taps.</p>
+        <div class="btn-row"><select id="tickUnit" aria-label="Smallest marks are"><option value="1">Smallest marks are 1 mm</option><option value="1.5875">Smallest marks are 1/16 in</option><option value="3.175">Smallest marks are 1/8 in</option><option value="5">Smallest marks are 5 mm</option></select><button class="btn small plant" type="button" id="tickFind">Find marks</button></div>
+        <p class="hint" id="tickMsg" style="margin:0"></p></details>
+    </div>
     <p class="hint" id="scStep" style="margin:0;color:var(--fg)"></p>
     <canvas id="scCanvas" style="width:100%;border-radius:var(--r-md);touch-action:none;background:var(--surface-2);display:block"></canvas>
     <div class="banner warn" id="scResult" hidden></div>
@@ -3008,10 +3017,14 @@ function openScaleSheet(src, onUse) {
   document.body.appendChild(bg);
   const cv = $("#scCanvas", bg), ctx = cv.getContext("2d");
   const img = new Image();
-  let pts = [], lastCm = null;
+  let pts = [], lastCm = null, auto = null;   // auto: {pxPerMm, ticks: [[x,y]...]} from tick detection
+  const isTape = () => $("#scRef", bg).value === "tape";
+  const syncTape = () => { $("#tapeBox", bg).hidden = !isTape(); };
   const step = () => {
     const s = $("#scStep", bg);
-    if (pts.length < 2) s.textContent = pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin, or one end of the card edge you picked, straight across.";
+    if (pts.length < 2) s.textContent = isTape()
+      ? (pts.length ? "Now tap the second mark on the tape." : "Tap a mark on the tape, for example 0 or 10 cm.")
+      : (pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin, or one end of the card edge you picked, straight across.");
     else if (pts.length < 4) s.textContent = pts.length === 2 ? "Now tap one end of what you want to measure." : "Tap the other end.";
     else s.textContent = "Tap again to measure something else.";
   };
@@ -3024,6 +3037,48 @@ function openScaleSheet(src, onUse) {
     if (pts.length >= 2) seg(pts[0], pts[1], "#7fb5e6");
     if (pts.length >= 4) seg(pts[2], pts[3], "#e9a75e");
     pts.forEach((p, i) => dot(p, i < 2 ? "#7fb5e6" : "#e9a75e"));
+    if (auto) { ctx.strokeStyle = "#ffe066"; ctx.lineWidth = lw; for (const [x, y, nx, ny] of auto.ticks) { ctx.beginPath(); ctx.moveTo(x - nx * r * 1.6, y - ny * r * 1.6); ctx.lineTo(x + nx * r * 1.6, y + ny * r * 1.6); ctx.stroke(); } }
+  }
+  // Find evenly spaced tick marks along the line between the first two taps, by autocorrelation of brightness.
+  function findTicks() {
+    const msg = $("#tickMsg", bg);
+    if (pts.length < 2) { msg.textContent = "Tap two points along the tape first."; return; }
+    const [a, b] = pts, len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 60) { msg.textContent = "Tap points further apart, covering at least a few centimetres of the tape."; return; }
+    pts.length = 2; draw(); // redraw without the old overlay, then sample the clean image
+    const clean = document.createElement("canvas"); clean.width = cv.width; clean.height = cv.height; const cc = clean.getContext("2d"); cc.drawImage(img, 0, 0, cv.width, cv.height);
+    const px = cc.getImageData(0, 0, cv.width, cv.height).data;
+    const ux = (b[0] - a[0]) / len, uy = (b[1] - a[1]) / len, nx = -uy, ny = ux;
+    const N = Math.floor(len), prof = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let sum = 0;
+      for (let k = -2; k <= 2; k++) { // average a short strip across the tape to cut noise
+        const x = Math.round(a[0] + ux * i + nx * k * 2), y = Math.round(a[1] + uy * i + ny * k * 2);
+        if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) continue;
+        const o = (y * cv.width + x) * 4; sum += px[o] * 0.3 + px[o + 1] * 0.59 + px[o + 2] * 0.11;
+      }
+      prof[i] = sum / 5;
+    }
+    const win = 15, det = new Float64Array(N);
+    for (let i = 0; i < N; i++) { let s2 = 0, c = 0; for (let j = Math.max(0, i - win); j <= Math.min(N - 1, i + win); j++) { s2 += prof[j]; c++; } det[i] = prof[i] - s2 / c; }
+    let e0 = 0; for (let i = 0; i < N; i++) e0 += det[i] * det[i];
+    if (e0 < 1) { msg.textContent = "No marks found there. Try tapping right along the tick marks."; return; }
+    const maxLag = Math.min(Math.floor(N / 3), 300), ac = [];
+    for (let L = 3; L <= maxLag; L++) { let s3 = 0; for (let i = 0; i + L < N; i++) s3 += det[i] * det[i + L]; ac[L] = s3 / e0 * N / (N - L); }
+    let best = 0, lag = 0;
+    for (let L = 4; L < maxLag; L++) if (ac[L] > ac[L - 1] && ac[L] >= ac[L + 1] && ac[L] > best) { best = ac[L]; lag = L; }
+    // The first strong peak is the spacing; later peaks are just 2, 3 or 4 marks apart.
+    for (let L = 4; L < lag; L++) if (ac[L] > ac[L - 1] && ac[L] >= ac[L + 1] && ac[L] > best * 0.5) { lag = L; break; }
+    if (!lag || best < 0.25) { auto = null; draw(); msg.textContent = "Couldn't find evenly spaced marks. Use the two-mark method above."; return; }
+    // Refine the period to sub-pixel accuracy with a parabola through the peak.
+    const y0 = ac[lag - 1], y1 = ac[lag], y2 = ac[lag + 1] ?? y1;
+    const period = lag + (y0 - y2) / (2 * (y0 - 2 * y1 + y2) || 1);
+    const unitMm = +$("#tickUnit", bg).value;
+    const ticks = []; for (let d = 0; d < len; d += period) ticks.push([a[0] + ux * d, a[1] + uy * d, nx, ny]);
+    auto = { pxPerMm: period / unitMm, ticks, conf: best };
+    draw(); compute();
+    msg.innerHTML = `Found marks every <b>${period.toFixed(1)} px</b> (${best > 0.55 ? "clear" : "faint, so check them"}). The yellow lines should sit on the tape's marks. If they don't, use the two-mark method.`;
+    step();
   }
   function compute() {
     if (pts.length < 4) { $("#scResult", bg).hidden = true; $("#scUse", bg).hidden = true; return; }
@@ -3031,7 +3086,12 @@ function openScaleSheet(src, onUse) {
     const ref = SCALE_REFS.find(r => r[0] === $("#scRef", bg).value) || SCALE_REFS[0];
     const refPx = d(pts[0], pts[1]);
     if (refPx < 4) { $("#scResult", bg).hidden = false; $("#scResult", bg).textContent = "The two scale points are too close together. Start again."; return; }
-    lastCm = d(pts[2], pts[3]) / refPx * ref[2] / 10;
+    let refMm = ref[2], pxPerMm = refPx / (refMm || 1);
+    if (isTape()) {
+      if (auto) pxPerMm = auto.pxPerMm;
+      else { const v = parseFloat($("#tapeLen", bg).value); if (!(v > 0)) { $("#scResult", bg).hidden = false; $("#scResult", bg).textContent = "Enter the distance between the two marks."; return; } pxPerMm = refPx / (v * ($("#tapeUnit", bg).value === "in" ? 25.4 : 10)); }
+    }
+    lastCm = d(pts[2], pts[3]) / pxPerMm / 10;
     const shown = settings.units === "in" ? `${(lastCm / 2.54).toFixed(2)} in` : `${lastCm.toFixed(1)} cm`;
     $("#scResult", bg).hidden = false; $("#scResult", bg).innerHTML = `<div class="grow">About <b class="num">${esc(shown)}</b>. Treat this as an estimate.</div>`;
     $("#scUse", bg).hidden = false;
@@ -3044,8 +3104,15 @@ function openScaleSheet(src, onUse) {
     if (pts.length >= 4) pts = pts.slice(0, 2);
     pts.push(p); draw(); compute(); step();
   });
-  $("#scRef", bg).addEventListener("change", e => { lsSet("scaleRef", e.target.value); compute(); });
-  $("#scRedo", bg).addEventListener("click", () => { pts = []; draw(); compute(); step(); });
+  $("#scRef", bg).addEventListener("change", e => { lsSet("scaleRef", e.target.value); auto = null; syncTape(); draw(); compute(); step(); });
+  $("#tapeUnit", bg).value = lsGet("tapeUnit", settings.units === "in" ? "in" : "cm");
+  $("#tickUnit", bg).value = settings.units === "in" ? "1.5875" : "1";
+  $("#tapeLen", bg).addEventListener("input", e => { lsSet("tapeLen", e.target.value); auto = null; draw(); compute(); });
+  $("#tapeUnit", bg).addEventListener("change", e => { lsSet("tapeUnit", e.target.value); compute(); });
+  $("#tickUnit", bg).addEventListener("change", () => { if (auto) findTicks(); });
+  $("#tickFind", bg).addEventListener("click", findTicks);
+  syncTape();
+  $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; $("#tickMsg", bg).textContent = ""; draw(); compute(); step(); });
   $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null) { onUse(b.dataset.use, lastCm); toast("Measurement added"); } });
   const close = () => bg.remove();
   $("#scDone", bg).addEventListener("click", close);
