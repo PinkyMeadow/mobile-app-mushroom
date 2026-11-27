@@ -682,6 +682,7 @@ function setChrome({ title, back = false, tab = null, actions = "" }) {
 function cleanupMaps() { maps.forEach(m => { try { m.remove(); } catch (e) {} }); maps = []; }
 async function route() {
   cleanupMaps();
+  if (logSel.size && (location.hash || "#log") !== "#log") { logSel.clear(); document.body.classList.remove("selecting"); }
   $$(".sheet-bg").forEach(s => s.remove());
   const h = (location.hash || "#log").slice(1);
   window.scrollTo(0, 0);
@@ -930,7 +931,107 @@ function renderResults() {
   const ma = $("#mAll"); if (ma) ma.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = true; }); saveOpen(); });
   const mn = $("#mNone"); if (mn) mn.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = false; }); saveOpen(); });
   hydrateThumbs(res);
+  wireLogSelect(res);
 }
+
+/* Hold a find on the Finds page to select it, then act on all the selected finds at once. */
+var logSel = new Set();
+const cardId = a => (a.getAttribute("href") || "").replace(/^#find-/, "");
+function wireLogSelect(res) {
+  logSel = new Set([...logSel].filter(id => finds.some(f => f.id === id)));
+  drawLogSel();
+  if (res._selWired) return; res._selWired = true;
+  let timer = null, start = null, fired = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  res.addEventListener("pointerdown", e => {
+    const a = e.target.closest("a.card"); if (!a) return;
+    fired = false; start = [e.clientX, e.clientY];
+    timer = setTimeout(() => { fired = true; timer = null; logSel.add(cardId(a)); if (navigator.vibrate) navigator.vibrate(15); drawLogSel(); }, 480);
+  });
+  res.addEventListener("pointermove", e => { if (timer && start && Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 10) cancel(); });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(t => res.addEventListener(t, cancel));
+  res.addEventListener("contextmenu", e => { if (e.target.closest("a.card")) e.preventDefault(); });
+  res.addEventListener("click", e => {
+    const a = e.target.closest("a.card"); if (!a) return;
+    if (fired) { e.preventDefault(); fired = false; return; }
+    if (!logSel.size) return;
+    e.preventDefault();
+    const id = cardId(a); if (logSel.has(id)) logSel.delete(id); else logSel.add(id); drawLogSel();
+  }, true);
+}
+function drawLogSel() {
+  const res = $("#results"); if (!res) return;
+  document.body.classList.toggle("selecting", logSel.size > 0);
+  $$("a.card", res).forEach(a => a.classList.toggle("sel", logSel.has(cardId(a))));
+  let bar = $("#selBar");
+  if (!logSel.size) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement("div"); bar.id = "selBar"; bar.className = "irbar selbar"; main.appendChild(bar); }
+  const shown = $$("a.card", res).map(cardId);
+  bar.innerHTML = `<button type="button" class="laX" id="selX" aria-label="Stop selecting">×</button><span class="num"><b>${logSel.size}</b> selected</span>
+    ${shown.some(id => !logSel.has(id)) ? `<button type="button" class="btn small ghost" id="selAll">All</button>` : ""}
+    <button type="button" class="btn small" id="selLoc" aria-label="Set location"><svg><use href="#i-pin"/></svg></button>
+    <button type="button" class="btn small primary" id="selMore">Edit</button>`;
+  $("#selX").onclick = () => { logSel.clear(); drawLogSel(); };
+  const sa = $("#selAll"); if (sa) sa.onclick = () => { shown.forEach(id => logSel.add(id)); drawLogSel(); };
+  $("#selLoc").onclick = () => bulkAct("loc");
+  $("#selMore").onclick = async () => {
+    const trips = tripList();
+    const v = await pickSheet(`Edit ${logSel.size} ${logSel.size === 1 ? "find" : "finds"}`, [
+      ["loc", "Set location"], ...(trips.length ? [["trip", "Add to a trip"]] : []), ["name", "Give them one name"], ["edib", "Set edibility"],
+      ["rvOn", "Mark to revisit"], ["rvOff", "Don't revisit"], ["mushroom", "Make them mushrooms"], ["plant", "Make them plants"], ["trash", "Move to trash", "danger"]]);
+    if (v) bulkAct(v);
+  };
+}
+function pickSheet(title, options) {
+  return new Promise(resolve => {
+    const bg = document.createElement("div"); bg.className = "sheet-bg";
+    bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" style="gap:6px;overflow:auto"><h2 style="margin-bottom:6px">${esc(title)}</h2>${options.map(([v, l, cls]) => `<button type="button" class="pickrow ${cls || ""}" data-v="${esc(v)}">${esc(l)}</button>`).join("")}<button type="button" class="btn ghost" data-v="" style="margin-top:6px">Cancel</button></div>`;
+    document.body.appendChild(bg);
+    bg.addEventListener("click", e => { const b = e.target.closest("[data-v]"); if (b || e.target === bg) { bg.remove(); resolve(b ? b.dataset.v || null : null); } });
+  });
+}
+function textSheet(title, value, placeholder) {
+  return new Promise(resolve => {
+    const bg = document.createElement("div"); bg.className = "sheet-bg";
+    bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><h2>${esc(title)}</h2><input type="text" id="tsIn" value="${esc(value || "")}" placeholder="${esc(placeholder || "")}"><div class="btn-row"><button type="button" class="btn ghost" id="tsNo">Cancel</button><button type="button" class="btn primary" id="tsOk" style="flex:1">Save</button></div></div>`;
+    document.body.appendChild(bg);
+    const inp = $("#tsIn", bg); setTimeout(() => inp.focus(), 50);
+    const done = v => { bg.remove(); resolve(v); };
+    $("#tsNo", bg).onclick = () => done(null); $("#tsOk", bg).onclick = () => done(inp.value.trim());
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") done(inp.value.trim()); });
+    bg.addEventListener("click", e => { if (e.target === bg) done(null); });
+  });
+}
+async function bulkAct(kind) {
+  const list = finds.filter(f => logSel.has(f.id)); if (!list.length) return;
+  const n = list.length, nTxt = `${n} ${n === 1 ? "find" : "finds"}`, now = new Date().toISOString();
+  let patch = null, msg = "";
+  if (kind === "loc") {
+    const loc = await chooseLocation(list[0].foundAt, `Set location for ${nTxt}`); if (!loc) return;
+    patch = f => Object.assign(f, { lat: loc.lat, lng: loc.lng, acc: loc.acc, locSource: loc.src }); msg = `Location set for ${nTxt}`;
+  } else if (kind === "trip") {
+    const t = await pickSheet("Add to a trip", [...tripList().map(t => [t.id, t.name]), ["none", "No trip"]]); if (!t) return;
+    patch = f => { if (t === "none") delete f.tripId; else f.tripId = t; }; msg = t === "none" ? `Removed ${nTxt} from trips` : `Added ${nTxt} to the trip`;
+  } else if (kind === "rvOn" || kind === "rvOff") { patch = f => { f.revisit = kind === "rvOn"; }; msg = kind === "rvOn" ? `Marked ${nTxt} to revisit` : "Revisit turned off"; }
+  else if (kind === "edib") {
+    const v = await pickSheet("Set edibility", EDIBILITY.map(([v, l]) => [v, l])); if (!v) return;
+    if (v === "edible" && await pickSheet("Only mark finds edible once an expert has checked each one in person.", [["yes", "Mark them edible"]]) !== "yes") return;
+    patch = f => { f.edibility = v; }; msg = `Edibility set for ${nTxt}`;
+  } else if (kind === "mushroom" || kind === "plant") { patch = f => { f.type = kind; }; msg = `Changed ${nTxt}`; }
+  else if (kind === "name") {
+    const v = await textSheet(`Name for ${nTxt}`, (list.find(f => f.name) || {}).name, "e.g. Chanterelle"); if (v == null) return;
+    patch = f => { f.name = v; }; msg = `Renamed ${nTxt}`;
+  } else if (kind === "trash") {
+    for (const f of list) { f.deletedAt = Date.now(); await store.put("finds", f); }
+    logSel.clear(); await loadFinds(); renderResults();
+    toast(`Moved ${nTxt} to the trash`, { label: "Undo", run: async () => { for (const f of list) { delete f.deletedAt; await store.put("finds", f); } await loadFinds(); renderResults(); toast("Restored"); } });
+    return;
+  }
+  if (!patch) return;
+  for (const f of list) { patch(f); f.updatedAt = now; await store.put("finds", f); }
+  logSel.clear(); await loadFinds(); renderResults(); toast(msg);
+}
+
 
 /* ============================================================
    Detail
@@ -3762,6 +3863,156 @@ function drawCalendar(kind) {
 /* ============================================================
    Photo scale helper: measure against a coin or card in the shot.
    ============================================================ */
+/* Automatic ruler finder. Looks for a long run of evenly spaced, parallel tick marks
+   (a ruler or tape) anywhere in the photo and works out how many pixels make 1 mm.
+   Assumes metric markings. Returns null unless it's fairly sure. */
+function detectRuler(imgData) {
+  const W = imgData.width, H = imgData.height, d = imgData.data;
+  const g = new Float32Array(W * H);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = d[j] * 0.3 + d[j + 1] * 0.59 + d[j + 2] * 0.11;
+  const sample = (x, y) => { const xi = x | 0, yi = y | 0; return (xi < 0 || yi < 0 || xi >= W || yi >= H) ? NaN : g[yi * W + xi]; };
+  // 1. Main edge directions. Tick marks are many parallel edges, so they make a peak.
+  const bins = new Float64Array(180);
+  for (let y = 2; y < H - 2; y += 2) for (let x = 2; x < W - 2; x += 2) {
+    const i = y * W + x, gx = g[i + 1] - g[i - 1], gy = g[i + W] - g[i - W], m = Math.abs(gx) + Math.abs(gy);
+    if (m < 30) continue;
+    let a = Math.atan2(gy, gx) * 180 / Math.PI; if (a < 0) a += 180; bins[Math.floor(a) % 180] += m;
+  }
+  const sm = new Float64Array(180);
+  for (let a = 0; a < 180; a++) { let s = 0; for (let k = -3; k <= 3; k++) s += bins[(a + k + 180) % 180]; sm[a] = s; }
+  const peaks = [];
+  for (let a = 0; a < 180; a++) if (sm[a] >= sm[(a + 179) % 180] && sm[a] > sm[(a + 1) % 180]) peaks.push([sm[a], a]);
+  peaks.sort((p, q) => q[0] - p[0]);
+  const angles = [];
+  const far = (a, b) => Math.min(Math.abs(a - b), 180 - Math.abs(a - b)) > 8;
+  for (const [, a] of peaks) { if (angles.every(b => far(a, b))) angles.push(a); if (angles.length >= 5) break; }
+  for (let a = 0; a < 180; a += 20) if (angles.every(b => far(a, b))) angles.push(a); // leaf litter can hide the ruler's own peak
+
+  const WL = 128, STEP = 32, MAXLAG = 36, LSTEP = 5;
+  const prof = new Float32Array(Math.ceil(Math.hypot(W, H)) + 4), cum = new Float64Array(prof.length + 1), det = new Float32Array(WL), ac = new Float32Array(WL);
+  function scan(deg) {
+    const th = deg * Math.PI / 180, ux = Math.cos(th), uy = Math.sin(th), nx = -uy, ny = ux;
+    const cs = [[0, 0], [W, 0], [0, H], [W, H]];
+    const on = cs.map(([x, y]) => x * nx + y * ny), ou = cs.map(([x, y]) => x * ux + y * uy);
+    const o0 = Math.min(...on), o1 = Math.max(...on), t0 = Math.min(...ou), t1 = Math.max(...ou);
+    const runs = [];
+    for (let o = o0 + 2; o < o1 - 2; o += LSTEP) {
+      let n = 0, first = null;
+      for (let t = t0; t < t1; t++) { // brightness along the line, over a 3 px strip
+        const bx = o * nx + t * ux, by = o * ny + t * uy;
+        const v = (sample(bx - nx, by - ny) + sample(bx, by) + sample(bx + nx, by + ny)) / 3;
+        if (v === v) { if (first === null) first = t; prof[n++] = v; } else if (n) break;
+      }
+      if (n < WL * 2) continue;
+      let run = null;
+      const flushRun = () => { if (run && run.n >= 4) runs.push(run); run = null; };
+      cum[0] = 0; for (let i = 0; i < n; i++) cum[i + 1] = cum[i] + prof[i];
+      for (let s = 0; s + WL <= n; s += STEP) {
+        let e0 = 0;
+        for (let i = 0; i < WL; i++) { // remove slow brightness changes, keep the ticks
+          const lo = Math.max(0, i - 8), hi = Math.min(WL - 1, i + 8);
+          det[i] = prof[s + i] - (cum[s + hi + 1] - cum[s + lo]) / (hi - lo + 1); e0 += det[i] * det[i];
+        }
+        if (e0 / WL < 30) { flushRun(); continue; } // too flat to hold ticks
+        const acAt = L => { let s3 = 0; for (let i = 0; i + L < WL; i++) s3 += det[i] * det[i + L]; return s3 / e0 * WL / (WL - L); };
+        for (let L = 2; L <= MAXLAG + 1; L++) ac[L] = acAt(L);
+        let p = 0;
+        for (let L = 3; L <= MAXLAG; L++) if (ac[L] > 0.4 && ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1]) { p = L; break; }
+        if (!p || 3 * p + 1 >= WL - 8) { flushRun(); continue; }
+        for (const m of [2, 3]) for (let L = m * p - 2; L <= m * p + 2; L++) ac[L] = acAt(L);
+        const pk = x => { const r = Math.round(x); return Math.max(ac[r - 1] || 0, ac[r] || 0, ac[r + 1] || 0); };
+        if (!p || 3 * p + 1 >= WL - 8 || pk(2 * p) < 0.3 || pk(3 * p) < 0.2) { flushRun(); continue; }
+        const y0 = ac[p - 1], y1 = ac[p], y2 = ac[p + 1];
+        const pp = p + (y0 - y2) / (2 * (y0 - 2 * y1 + y2) || 1);
+        const sc = ac[p] + pk(2 * p) + pk(3 * p);
+        if (run && Math.abs(pp - run.p) / run.p < 0.07) { run.n++; run.tEnd = first + s + WL; run.sum += sc; run.ps.push(pp); run.p = run.ps.slice().sort((a, b) => a - b)[run.ps.length >> 1]; }
+        else { flushRun(); run = { o, tStart: first + s, tEnd: first + s + WL, n: 1, sum: sc, p: pp, ps: [pp] }; }
+      }
+      flushRun();
+    }
+    // A ruler shows up on several neighbouring lines with the same spacing.
+    let best = null;
+    for (const r of runs) {
+      const sup = runs.filter(q => Math.abs(q.o - r.o) <= 20 && Math.abs(q.p - r.p) / r.p < 0.07 && q.tStart < r.tEnd && q.tEnd > r.tStart);
+      if (sup.length < 2) continue;
+      const score = sup.reduce((a, q) => a + q.sum, 0);
+      if (!best || score > best.score) best = { score, deg, ux, uy, nx, ny, o: r.o, tStart: Math.min(...sup.map(q => q.tStart)), tEnd: Math.max(...sup.map(q => q.tEnd)), p: r.p, lines: sup.length, mean: r.sum / r.n, os: sup.map(q => q.o) };
+    }
+    return best;
+  }
+  let best = null;
+  for (const a of angles) { const b = scan(a); if (b && (!best || b.score > best.score)) best = b; }
+  if (!best || best.mean < 1.2 || (best.tEnd - best.tStart) < 12 * best.p) return null;
+
+  // Straighten up: turn the line about the ruler's middle until the marks line up sharpest.
+  {
+    const tc = (best.tStart + best.tEnd) / 2, cx = best.o * best.nx + tc * best.ux, cy = best.o * best.ny + tc * best.uy, half = (best.tEnd - best.tStart) / 2;
+    const K0 = Math.max(2, Math.floor(half * 2 / best.p / 2));
+    const sharp = deg => {
+      const th = deg * Math.PI / 180, ux = Math.cos(th), uy = Math.sin(th), nx = -uy, ny = ux, n = Math.floor(half * 2);
+      const pr = new Float64Array(n);
+      for (let i = 0; i < n; i++) { const x = cx + ux * (i - half), y = cy + uy * (i - half); let sm = 0, c = 0; for (let k = -2; k <= 2; k++) { const v = sample(x + nx * k * 2, y + ny * k * 2); if (v === v) { sm += v; c++; } } pr[i] = c ? sm / c : 0; }
+      let e = 0; const dt = new Float64Array(n);
+      for (let i = 0; i < n; i++) { let m = 0, c = 0; for (let j = Math.max(0, i - 8); j <= Math.min(n - 1, i + 8); j++) { m += pr[j]; c++; } dt[i] = pr[i] - m / c; e += dt[i] * dt[i]; }
+      if (!e) return 0;
+      let bestv = -1; for (let L = Math.round(best.p * K0) - 3; L <= Math.round(best.p * K0) + 3; L++) { let sm = 0; for (let i = 0; i + L < n; i++) sm += dt[i] * dt[i + L]; bestv = Math.max(bestv, sm / e); }
+      return bestv;
+    };
+    let bd = best.deg, bvv = sharp(bd);
+    for (let dd = -6; dd <= 6; dd += 0.5) { if (!dd) continue; const v = sharp(best.deg + dd); if (v > bvv) { bvv = v; bd = best.deg + dd; } }
+    if (bd !== best.deg) {
+      const th = bd * Math.PI / 180, ux = Math.cos(th), uy = Math.sin(th), nx = -uy, ny = ux;
+      const o = cx * nx + cy * ny, t = cx * ux + cy * uy;
+      best = { ...best, deg: bd, ux, uy, nx, ny, os: best.os.map(q => o + (q - best.o)), o, tStart: t - half, tEnd: t + half };
+    }
+  }
+  // 2. Long profiles along the ruler, one per supporting line, for sub-pixel spacing.
+  const { ux, uy, nx, ny } = best;
+  const N = Math.floor(best.tEnd - best.tStart);
+  const profile = o => {
+    const a = [o * nx + best.tStart * ux, o * ny + best.tStart * uy], pr = new Float64Array(N);
+    for (let i = 0; i < N; i++) { let s = 0, c = 0; for (let k = -1; k <= 1; k++) { const v = sample(a[0] + ux * i + nx * k, a[1] + uy * i + ny * k); if (v === v) { s += v; c++; } } pr[i] = c ? s / c : 0; }
+    const dt = new Float64Array(N); let e = 0;
+    for (let i = 0; i < N; i++) { let m = 0, c = 0; for (let j = Math.max(0, i - 8); j <= Math.min(N - 1, i + 8); j++) { m += pr[j]; c++; } dt[i] = pr[i] - m / c; e += dt[i] * dt[i]; }
+    const acf = L => { L = Math.round(L); if (L < 1 || L >= N - 4 || !e) return 0; let s = 0; for (let i = 0; i + L < N; i++) s += dt[i] * dt[i + L]; return s / e * N / (N - L); };
+    return { a, dt, acf };
+  };
+  const lines = [...new Set([...best.os, best.o - 10, best.o + 10, best.o - 15, best.o + 15])].map(profile);
+  const main = profile(best.o);
+  // Finer marks the first pass missed? (e.g. it locked onto 5 mm marks)
+  let P = best.p;
+  for (const div of [10, 5, 2]) {
+    const s = P / div; if (s < 2.2) continue;
+    const ok = lines.some(l => { const v1 = Math.max(l.acf(s - 1), l.acf(s), l.acf(s + 1)), v2 = Math.max(l.acf(2 * s - 1), l.acf(2 * s), l.acf(2 * s + 1)); return v1 > 0.2 && v2 > 0.15 && l.acf(s / 2) < v1 * 0.5 && l.acf(s * 1.5) < v1 * 0.3 && l.acf(s * 2.5) < v2 * 0.3; });
+    if (ok) { P = s; break; }
+  }
+  const K = Math.max(1, Math.min(Math.floor(N / P / 3), 40));
+  const c0 = Math.round(P * K);
+  let bl = c0, bv = -Infinity;
+  for (let L = c0 - Math.ceil(P / 3); L <= c0 + Math.ceil(P / 3); L++) { const v = main.acf(L); if (v > bv) { bv = v; bl = L; } }
+  const v0 = main.acf(bl - 1), v2 = main.acf(bl + 1);
+  const period = (bl + (v0 - v2) / (2 * (v0 - 2 * bv + v2) || 1)) / K;
+  if (!(period > 2)) return null;
+  // 3. Which marks are these? Longer 5 mm and 1 cm marks make the 5th and 10th repeats stronger,
+  //    and longer 1 cm marks make every 2nd repeat stronger when the marks are 5 mm apart.
+  const liftAt = (l, m) => l.acf(period * m) - (l.acf(period * (m - 1)) + l.acf(period * (m + 1))) / 2;
+  const lift5 = Math.max(...lines.map(l => Math.max(liftAt(l, 5), N > period * 22 ? liftAt(l, 10) : -1)));
+  const lift2 = Math.max(...lines.map(l => liftAt(l, 2)));
+  const plausible = mm => W / mm >= 40 && W / mm <= 900; // the photo shows 4 to 90 cm across
+  let unitMm;
+  if (lift5 > 0.04 && lift5 >= lift2 && plausible(period)) unitMm = 1;
+  else if (lift2 > 0.1 && plausible(period / 5)) unitMm = 5;
+  else if (plausible(period)) unitMm = 1;
+  else if (plausible(period / 10)) unitMm = 10;
+  else return null;
+  // Line the overlay up with the marks themselves (dark on light, or light on dark).
+  let bestPh = 0, bestS = -Infinity;
+  for (const sg of [-1, 1]) for (let ph = 0; ph < period; ph += 0.25) { let s = 0; for (let x = ph; x < N; x += period) s += sg * (main.dt[Math.round(x)] || 0); if (s > bestS) { bestS = s; bestPh = ph; } }
+  // Sure only when the millimetre marks themselves were seen clearly.
+  const sure = best.mean >= 1.6 && unitMm === 1 && period >= 3.5 && (lift5 > 0.04 || period >= 5);
+  return { pxPerMm: period / unitMm, period, unitMm, ux, uy, nx, ny, start: [main.a[0] + ux * bestPh, main.a[1] + uy * bestPh], len: N - bestPh, conf: Math.min(1, best.mean / 2.2), sure, lift5, lift2, lines: best.lines };
+}
+
 const SIZE_FIELDS = [["width", "Width"], ["height", "Height"], ["length", "Length"], ["stem", "Stem height"]];
 // Guesses which size a line is from its direction and what the photo shows.
 function guessSizeField(p, q, label) {
@@ -3786,6 +4037,7 @@ function openScaleSheet(src, onUse, photoLabel) {
         <div class="btn-row"><select id="tickUnit" aria-label="Smallest marks are"><option value="1">Smallest marks are 1 mm</option><option value="1.5875">Smallest marks are 1/16 in</option><option value="3.175">Smallest marks are 1/8 in</option><option value="5">Smallest marks are 5 mm</option></select><button class="btn small plant" type="button" id="tickFind">Find marks</button></div>
         <p class="hint" id="tickMsg" style="margin:0"></p></details>
     </div>
+    <div class="scauto" id="scAuto" hidden></div>
     <p class="hint" id="scStep" style="margin:0;color:var(--fg)"></p>
     <div id="scWrap" style="flex:none;position:relative;overflow:hidden;border-radius:var(--r-md);touch-action:none;background:var(--surface-2)">
       <canvas id="scCanvas" style="width:100%;display:block;transform-origin:0 0"></canvas>
@@ -3809,7 +4061,7 @@ function openScaleSheet(src, onUse, photoLabel) {
     if (pts.length < 2) s.textContent = isTape()
       ? (pts.length ? "Now tap the second mark on the tape." : "Tap a mark on the tape, for example 0 or 10 cm.")
       : (pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin, or one end of the card edge you picked, straight across.");
-    else if (pts.length < 4) s.textContent = pts.length === 2 ? "Now tap one end of what you want to measure." : "Tap the other end.";
+    else if (pts.length < 4) s.textContent = pts.length === 2 ? (auto && auto.full ? "Tap one end of what you want to measure." : "Now tap one end of what you want to measure.") : "Tap the other end.";
     else s.textContent = "Tap again to measure something else. Each one fills in its own size.";
   };
   function draw() {
@@ -3822,7 +4074,8 @@ function openScaleSheet(src, onUse, photoLabel) {
     if (pts.length >= 2) seg(pts[0], pts[1], "#7fb5e6");
     if (pts.length >= 4) seg(pts[2], pts[3], "#e9a75e");
     pts.forEach((p, i) => dot(p, i < 2 ? "#7fb5e6" : "#e9a75e"));
-    if (auto) { ctx.strokeStyle = "#ffe066"; ctx.lineWidth = lw; for (const [x, y, nx, ny] of auto.ticks) { ctx.beginPath(); ctx.moveTo(x - nx * r * 1.6, y - ny * r * 1.6); ctx.lineTo(x + nx * r * 1.6, y + ny * r * 1.6); ctx.stroke(); } }
+    if (auto) { ctx.strokeStyle = "#ffe066"; ctx.lineWidth = lw; const t0 = auto.ticks[0], t1 = auto.ticks[1], gap = t1 ? Math.hypot(t1[0] - t0[0], t1[1] - t0[1]) / per : 99, every = gap >= 7 ? 1 : gap * 5 >= 7 ? 5 : 10;
+      for (const [x, y, nx, ny] of auto.ticks.filter((_, i) => i % every === 0)) { ctx.beginPath(); ctx.moveTo(x - nx * r * 1.6, y - ny * r * 1.6); ctx.lineTo(x + nx * r * 1.6, y + ny * r * 1.6); ctx.stroke(); } }
   }
   // Find evenly spaced tick marks along the line between the first two taps, by autocorrelation of brightness.
   function findTicks() {
@@ -3897,7 +4150,44 @@ function openScaleSheet(src, onUse, photoLabel) {
       ? `<div><b style="color:var(--plant)">✓ Filled in as ${esc(name)}.</b> <span class="hint">Wrong one? Tap the right size:</span></div><div class="btn-row">${SIZE_FIELDS.filter(f => f[0] !== cur.field).map(([k, l]) => `<button class="btn small" type="button" data-use="${k}">${l}</button>`).join("")}</div>`
       : `<div><b>Which size is this?</b> <span class="hint">The line is at an angle, so I can't tell.</span></div><div class="btn-row">${SIZE_FIELDS.map(([k, l]) => `<button class="btn small plant" type="button" data-use="${k}">${l}</button>`).join("")}</div>`;
   }
-  img.onload = () => { const w = Math.min(1600, img.naturalWidth); cv.width = w; cv.height = Math.round(img.naturalHeight * w / img.naturalWidth); draw(); };
+  // Look for a ruler or tape by itself; if one is found the scale is set with no taps.
+  let found = null;
+  const applyFound = () => {
+    if (!found) return;
+    $("#scRef", bg).value = "tape"; syncTape(); $("#tapeUnit", bg).value = "cm";
+    const r = found, cm = Math.floor(r.len / r.pxPerMm / 10), span = cm >= 1 ? cm * 10 * r.pxPerMm : Math.floor(r.len / r.period) * r.period;
+    const a = r.start, b = [a[0] + r.ux * span, a[1] + r.uy * span];
+    const ticks = []; for (let t = 0; t <= span + 0.5; t += r.period) ticks.push([a[0] + r.ux * t, a[1] + r.uy * t, r.nx, r.ny]);
+    auto = { pxPerMm: r.pxPerMm, ticks, conf: r.conf, full: true };
+    pts = [a, b]; $("#tapeLen", bg).value = +(span / r.pxPerMm / 10).toFixed(2);
+    $("#tapeBox", bg).hidden = true;
+    draw(); compute(); step();
+  };
+  function showAuto(state) {
+    const box = $("#scAuto", bg); box.hidden = false;
+    if (state === "busy") { box.className = "scauto"; box.innerHTML = `<span class="spin" aria-hidden="true"></span>Looking for a ruler…`; return; }
+    if (!found) { box.className = "scauto"; box.innerHTML = `No ruler found automatically. Tap two marks on it, or pick a coin or card above.`; return; }
+    const cmPx = (found.pxPerMm * 10).toFixed(0);
+    box.className = "scauto " + (found.sure ? "ok" : "check");
+    box.innerHTML = (found.sure
+      ? `<b>✓ Ruler found.</b> 1 cm is ${cmPx} px. The yellow lines show the ${found.unitMm === 1 ? "millimetre" : found.unitMm + " mm"} marks it used.`
+      : `<b>Looks like a ruler</b>, but the marks are faint. Check the yellow lines sit on its ${found.unitMm === 1 ? "millimetre" : found.unitMm === 5 ? "5 mm" : "centimetre"} marks.`)
+      + ` <button type="button" class="linkbtn" id="scManual">Not right? Tap two marks instead</button>`;
+    $("#scManual", bg).onclick = () => { found = null; auto = null; pts = []; box.hidden = true; $("#scRef", bg).value = "tape"; syncTape(); draw(); compute(); step(); };
+  }
+  img.onload = () => {
+    const w = Math.min(1600, img.naturalWidth); cv.width = w; cv.height = Math.round(img.naturalHeight * w / img.naturalWidth); draw();
+    showAuto("busy");
+    setTimeout(() => {
+      try {
+        const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height; const cc = c.getContext("2d"); cc.drawImage(img, 0, 0, c.width, c.height);
+        found = detectRuler(cc.getImageData(0, 0, c.width, c.height));
+      } catch (e) { found = null; }
+      if (!document.body.contains(bg)) return;
+      if (found && !pts.length) applyFound();
+      showAuto();
+    }, 60);
+  };
   img.src = src;
   // Zoom and pan with a CSS transform; points stay in image (canvas) coordinates.
   const wrap = $("#scWrap", bg), loupe = $("#scLoupe", bg), lctx = loupe.getContext("2d");
@@ -3942,7 +4232,7 @@ function openScaleSheet(src, onUse, photoLabel) {
       zoomAt(d / pinch.d, pinch.cx, pinch.cy); pinch.d = d; return;
     }
     if (!drag) return;
-    if (drag.type === "point") { const q = toImg(e); pts[drag.i] = [q[0] + drag.ox, q[1] + drag.oy]; draw(); compute(); showLoupe(e, pts[drag.i]); return; }
+    if (drag.type === "point") { const q = toImg(e); if (drag.i < 2 && auto && auto.full) auto = null; pts[drag.i] = [q[0] + drag.ox, q[1] + drag.oy]; draw(); compute(); showLoupe(e, pts[drag.i]); return; }
     if (drag.type === "tap" && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 8) drag = { type: "pan", x: e.clientX, y: e.clientY };
     if (drag.type === "pan") { tx += e.clientX - drag.x; ty += e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; clampView(); }
   });
@@ -3966,7 +4256,7 @@ function openScaleSheet(src, onUse, photoLabel) {
   $("#tickUnit", bg).addEventListener("change", () => { if (auto) findTicks(); });
   $("#tickFind", bg).addEventListener("click", findTicks);
   syncTape();
-  $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; k = 1; tx = 0; ty = 0; clampView(); $("#tickMsg", bg).textContent = ""; draw(); compute(); step(); });
+  $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; k = 1; tx = 0; ty = 0; clampView(); $("#tickMsg", bg).textContent = ""; cur = null; if (found) applyFound(); else { draw(); compute(); step(); } });
   $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null && cur) assign(b.dataset.use); });
   const close = () => bg.remove();
   $("#scDone", bg).addEventListener("click", close);
