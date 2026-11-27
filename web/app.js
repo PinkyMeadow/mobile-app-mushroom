@@ -466,6 +466,77 @@ const OfflineTiles = hasLeaflet ? L.TileLayer.extend({
     return img;
   }
 }) : null;
+/* Floating search over a map: your finds, hikes and coordinates work offline,
+   places and addresses come from Photon (OpenStreetMap) when there's signal. */
+function addMapSearch(m, opts = {}) {
+  const box = document.createElement("div"); box.className = "msearch";
+  box.innerHTML = `<div class="msbar"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><input type="text" placeholder="Search places or your finds" aria-label="Search the map" autocomplete="off" enterkeyhint="search"><button type="button" class="msx" aria-label="Clear" hidden>×</button></div><div class="msres" role="listbox" hidden></div>`;
+  m.getContainer().appendChild(box);
+  L.DomEvent.disableClickPropagation(box); L.DomEvent.disableScrollPropagation(box);
+  const inp = $("input", box), res = $(".msres", box), x = $(".msx", box);
+  let results = [], active = -1, timer = null, seq = 0, tmp = null;
+  const icon = { find: "#i-shroom", plant: "#i-leaf", hike: "#i-map", place: "#i-pin", coord: "#i-gps" };
+  function show() {
+    res.hidden = !results.length && !inp.value.trim();
+    res.innerHTML = results.length ? results.map((r, i) => `<button type="button" role="option" class="msitem ${i === active ? "on" : ""}" data-i="${i}"><svg><use href="${icon[r.kind] || "#i-pin"}"/></svg><span><b>${esc(r.title)}</b>${r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span></button>`).join("")
+      : `<div class="msempty">${netOK() ? "Searching…" : "No matches in your finds. Places need signal."}</div>`;
+  }
+  function local(q) {
+    const ql = q.toLowerCase(), out = [];
+    const c = q.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+    if (c && Math.abs(+c[1]) <= 90 && Math.abs(+c[2]) <= 180) out.push({ kind: "coord", title: `${(+c[1]).toFixed(5)}, ${(+c[2]).toFixed(5)}`, sub: "Coordinates", lat: +c[1], lng: +c[2], z: 16 });
+    const seen = new Set();
+    for (const f of finds) {
+      if (f.lat == null || out.length > 7) continue;
+      const hay = [f.name, f.place, f.trees, f.notes, ...(f.tags || [])].join(" ").toLowerCase();
+      if (!hay.includes(ql)) continue;
+      out.push({ kind: f.type === "plant" ? "plant" : "find", title: f.name || "Not yet identified", sub: fmtDate(f.foundAt) + (f.place ? " · " + f.place : ""), lat: f.lat, lng: f.lng, z: 17, id: f.id });
+    }
+    for (const t of opts.trails || []) if ((t.name || "").toLowerCase().includes(ql) && t.points && t.points.length && !seen.has(t.id)) { seen.add(t.id); const ll = t.points.map(p => [p[0], p[1]]); out.push({ kind: "hike", title: t.name, sub: "Hike", bounds: ll, lat: ll[0][0], lng: ll[0][1] }); }
+    return out;
+  }
+  async function online(q, my) {
+    if (!netOK() || q.length < 3) return;
+    try {
+      const c = m.getCenter();
+      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lat=${c.lat.toFixed(3)}&lon=${c.lng.toFixed(3)}`);
+      const j = await r.json();
+      if (my !== seq) return;
+      const places = (j.features || []).map(ft => { const p = ft.properties || {}, [lng, lat] = ft.geometry.coordinates;
+        const title = p.name || [p.housenumber, p.street].filter(Boolean).join(" ") || p.city || "Place";
+        const sub = [p.name && p.street ? [p.housenumber, p.street].filter(Boolean).join(" ") : "", p.city !== title ? p.city : "", p.state, p.country].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+        const ext = p.extent; return { kind: "place", title, sub, lat, lng, z: p.osm_key === "place" ? 13 : 16, bounds: ext ? [[ext[1], ext[0]], [ext[3], ext[2]]] : null }; });
+      results = [...results.filter(r => r.kind !== "place"), ...places]; show();
+    } catch (e) { if (my === seq && !results.length) { res.innerHTML = `<div class="msempty">Couldn't reach the place search.</div>`; } }
+  }
+  function go(r) {
+    if (!r) return;
+    inp.blur(); res.hidden = true;
+    if (tmp) { tmp.remove(); tmp = null; }
+    if (r.bounds && r.bounds.length > 1) m.flyToBounds(r.bounds, { padding: [30, 30], maxZoom: 16, duration: 0.8 });
+    else m.flyTo([r.lat, r.lng], Math.max(m.getZoom(), r.z || 15), { duration: 0.8 });
+    if (r.kind === "place" || r.kind === "coord") tmp = L.circleMarker([r.lat, r.lng], { radius: 9, color: "#fff", weight: 3, fillColor: getComputedStyle(document.documentElement).getPropertyValue("--shroom").trim(), fillOpacity: 1 }).addTo(m);
+    if (opts.onPick) opts.onPick(r);
+  }
+  inp.addEventListener("input", () => {
+    const q = inp.value.trim(); x.hidden = !q; active = -1; clearTimeout(timer);
+    if (!q) { results = []; res.hidden = true; return; }
+    results = local(q); show();
+    const my = ++seq; timer = setTimeout(() => online(q, my), 300);
+  });
+  inp.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, Math.min(results.length - 1, active + (e.key === "ArrowDown" ? 1 : -1))); show(); }
+    else if (e.key === "Enter") { e.preventDefault(); go(results[Math.max(0, active)]); }
+    else if (e.key === "Escape") { inp.value = ""; inp.dispatchEvent(new Event("input")); inp.blur(); }
+  });
+  inp.addEventListener("focus", () => { if (inp.value.trim()) show(); box.classList.add("focus"); });
+  inp.addEventListener("blur", () => box.classList.remove("focus"));
+  res.addEventListener("pointerdown", e => e.preventDefault());
+  res.addEventListener("click", e => { const b = e.target.closest("[data-i]"); if (b) go(results[+b.dataset.i]); });
+  x.addEventListener("click", () => { inp.value = ""; x.hidden = true; results = []; res.hidden = true; if (tmp) { tmp.remove(); tmp = null; } inp.focus(); });
+  m.on("click", () => { res.hidden = true; inp.blur(); });
+  return box;
+}
 function makeMap(el, center, zoom, opts = {}) {
   if (!hasLeaflet) { el.innerHTML = '<p class="hint" style="padding:16px">The map couldn\'t load.</p>'; return null; }
   const m = L.map(el, { zoomControl: true, attributionControl: true, ...opts }).setView(center, zoom);
@@ -622,6 +693,7 @@ async function route() {
   if (h === "inat-past") return renderInatPast();
   if (h === "hikes") return renderHikes();
   if (h === "notes") return renderNotebook();
+  if (h === "bulkloc") return renderBulkLocation();
   if (h === "anatomy") return renderAnatomy();
   if (h === "key") return renderKey();
   if (h === "labels") return renderLabels();
@@ -838,6 +910,7 @@ function renderResults() {
     return;
   }
   navIds = list.map(f => f.id); lsSet("navIds", navIds);
+  const noLocN = view.filter === "todo" ? list.filter(f => f.lat == null && !f.sample).length : 0;
   const groupCounts = {};
   list.forEach(f => { const k = groupKey(f); if (k) groupCounts[k] = (groupCounts[k] || 0) + 1; });
   // Months fold up. The newest one starts open; your choices are remembered, and a search opens them all.
@@ -851,7 +924,7 @@ function renderResults() {
     items.push(cardHTML(f));
   }
   flush();
-  res.innerHTML = (keys.length > 1 ? `<div class="mtools"><button type="button" id="mAll">Open all</button><span aria-hidden="true">·</span><button type="button" id="mNone">Close all</button></div>` : "") + html;
+  res.innerHTML = (noLocN > 1 ? `<a class="bllink" href="#bulkloc"><svg><use href="#i-pin"/></svg><span>${noLocN} finds have no location</span><b>Add locations ›</b></a>` : "") + (keys.length > 1 ? `<div class="mtools"><button type="button" id="mAll">Open all</button><span aria-hidden="true">·</span><button type="button" id="mNone">Close all</button></div>` : "") + html;
   const saveOpen = () => { if (!allOpen) lsSet("logOpen:" + view.sort, $$(".mgroup", res).filter(d => d.open).map(d => d.dataset.k)); };
   $$(".mgroup", res).forEach(d => d.addEventListener("toggle", () => { saveOpen(); if (d.open) hydrateThumbs(d); }));
   const ma = $("#mAll"); if (ma) ma.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = true; }); saveOpen(); });
@@ -1511,16 +1584,70 @@ function renderImport() {
       }
       if (!photos.length) continue;
       const gps = (g.find(x => x.gps) || {}).gps || null, whenISO = g[0].when.toISOString(), nowISO = new Date().toISOString();
-      const f = normalise({ id: uid(), type, name: "", photos, lat: gps ? gps.lat : null, lng: gps ? gps.lng : null, acc: null, locSource: gps ? "photo" : null,
+      const f = normalise({ id: uid(), type, name: "", photos, lat: gps ? gps.lat : null, lng: gps ? gps.lng : null, acc: null, locSource: gps ? ((g.find(x => x.gps) || {}).manualLoc || "photo") : null,
         foundAt: whenISO, createdAt: nowISO, updatedAt: nowISO, needsDetails: true, imported: true, moon: moonPhase(whenISO),
         width: null, height: null, length: null, stem: null, colours: [], colourNote: "", description: "", weather: [], rainRecent: "", temp: null, weatherNote: "" });
       await store.put("finds", f); made++; if (gps) withLoc++;
     }
     if (made && finds.some(x => x.sample)) await removeExamples();
     await loadFinds();
-    msg.textContent = `Imported ${items.length} ${items.length === 1 ? "photo" : "photos"} as ${made} ${made === 1 ? "find" : "finds"}. ${withLoc} had a location${made - withLoc ? `; pin the other ${made - withLoc} on the map when you add details` : ""}.`;
+    msg.innerHTML = `Imported ${items.length} ${items.length === 1 ? "photo" : "photos"} as ${made} ${made === 1 ? "find" : "finds"}. ${withLoc} had a location${made - withLoc ? `; add them on the <a href="#bulkloc">Add locations</a> page` : ""}.`;
     toast(`Imported ${made} ${made === 1 ? "find" : "finds"}`);
   });
+}
+/* Pick one location for many photos or finds at once: GPS, a map pin, or the same
+   place as another find (finds from the same day are listed first). */
+function chooseLocation(refDate, title = "Set location") {
+  return new Promise(resolve => {
+    const ref = refDate ? new Date(refDate).getTime() : Date.now();
+    const cands = finds.filter(f => f.lat != null && !f.sample)
+      .sort((a, b) => Math.abs(new Date(a.foundAt) - ref) - Math.abs(new Date(b.foundAt) - ref)).slice(0, 25);
+    const bg = document.createElement("div"); bg.className = "sheet-bg";
+    bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="clTitle" style="overflow:auto">
+      <h2 id="clTitle">${esc(title)}</h2>
+      <div class="btn-row">
+        <button class="btn" type="button" id="clPin" style="flex:1"><svg><use href="#i-pin"/></svg>Pick on map</button>
+        ${geoAvailable() ? '<button class="btn" type="button" id="clGps" style="flex:1"><svg><use href="#i-gps"/></svg>My location</button>' : ""}
+      </div>
+      ${cands.length ? `<div class="lbl">Same place as another find</div><div class="cllist">${cands.map(f => `<button type="button" class="clrow" data-id="${esc(f.id)}"><img data-photo="${esc((f.photos[0] || {}).key || "")}" alt=""><span><b>${esc(f.name || "Not yet identified")}</b><small class="num">${esc(fmtDate(f.foundAt))}${f.place ? " · " + esc(f.place) : ""}</small></span></button>`).join("")}</div>` : ""}
+      <button class="btn ghost" type="button" id="clCancel">Cancel</button>
+    </div>`;
+    document.body.appendChild(bg); hydrateThumbs(bg);
+    const done = v => { bg.remove(); resolve(v); };
+    $("#clCancel", bg).addEventListener("click", () => done(null));
+    bg.addEventListener("click", e => { if (e.target === bg) done(null); });
+    $("#clPin", bg).addEventListener("click", () => { bg.style.display = "none"; openPinSheet({ lat: cands[0] ? cands[0].lat : null, lng: cands[0] ? cands[0].lng : null }, loc => done({ ...loc, src: "pin" })); const obs = setInterval(() => { if (!$("#pickMap")) { clearInterval(obs); if (document.body.contains(bg)) done(null); } }, 400); });
+    const g = $("#clGps", bg);
+    if (g) g.addEventListener("click", async () => { g.disabled = true; g.lastChild.textContent = "Finding you…"; try { const l = await getPosition(); done({ lat: l.lat, lng: l.lng, acc: l.acc ?? null, src: "gps" }); } catch (e) { toast("Couldn't get a GPS fix"); g.disabled = false; g.lastChild.textContent = "My location"; } });
+    $$(".clrow", bg).forEach(b => b.addEventListener("click", () => { const f = finds.find(x => x.id === b.dataset.id); done({ lat: f.lat, lng: f.lng, acc: f.acc ?? null, src: "pin" }); }));
+  });
+}
+let blSel = new Set();
+function renderBulkLocation() {
+  setChrome({ title: "Add locations", back: true });
+  const list = finds.filter(f => f.lat == null && !f.sample).sort((a, b) => new Date(a.foundAt) - new Date(b.foundAt));
+  blSel = new Set([...blSel].filter(id => list.some(f => f.id === id)));
+  main.innerHTML = `<div class="wrap view">
+    ${list.length ? `<p class="hint" style="margin:0">${list.length} ${list.length === 1 ? "find has" : "finds have"} no location. Select the ones from the same spot, then set it once.</p>
+    <div class="btn-row" style="gap:6px"><button type="button" class="btn small ghost" id="blAll">Select all</button><button type="button" class="btn small ghost" id="blNone">Select none</button></div>
+    <div class="irgroups" style="margin-top:0">${list.map(f => `<label class="panel blrow"><input type="checkbox" data-id="${esc(f.id)}" ${blSel.has(f.id) ? "checked" : ""}><img data-photo="${esc((f.photos[0] || {}).key || "")}" alt=""><span><b>${esc(f.name || "Not yet identified")}</b><small class="num">${esc(fmtDate(f.foundAt, { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}, ${esc(fmtTime(f.foundAt))}</small></span></label>`).join("")}</div>
+    <div class="irbar"><span class="num" id="blCount"></span><button type="button" class="btn primary" id="blSet">Set location</button></div>`
+    : `<div class="empty"><h2>All set</h2><p>Every find has a location.</p><a class="btn" href="#log">Back to finds</a></div>`}
+  </div>`;
+  hydrateThumbs(main);
+  if (!list.length) return;
+  const sync = () => { $("#blCount").innerHTML = `<b>${blSel.size}</b> selected`; $("#blSet").disabled = !blSel.size; };
+  main.addEventListener("change", e => { const c = e.target.closest("[data-id]"); if (c) { c.checked ? blSel.add(c.dataset.id) : blSel.delete(c.dataset.id); sync(); } });
+  $("#blAll").addEventListener("click", () => { list.forEach(f => blSel.add(f.id)); $$("[data-id]", main).forEach(c => { c.checked = true; }); sync(); });
+  $("#blNone").addEventListener("click", () => { blSel.clear(); $$("[data-id]", main).forEach(c => { c.checked = false; }); sync(); });
+  $("#blSet").addEventListener("click", async () => {
+    const chosen = list.filter(f => blSel.has(f.id));
+    const loc = await chooseLocation(chosen[0] && chosen[0].foundAt, `Set location for ${chosen.length} ${chosen.length === 1 ? "find" : "finds"}`);
+    if (!loc) return;
+    for (const f of chosen) { Object.assign(f, { lat: loc.lat, lng: loc.lng, acc: loc.acc, locSource: loc.src, updatedAt: new Date().toISOString() }); await store.put("finds", f); }
+    blSel.clear(); await loadFinds(); toast(`Location set for ${chosen.length} ${chosen.length === 1 ? "find" : "finds"}`); renderBulkLocation();
+  });
+  sync();
 }
 // Show the proposed finds before anything is saved, so photos of different mushrooms
 // taken close together can be moved, split, merged or dropped.
@@ -1536,21 +1663,32 @@ function reviewImportGroups(groups0) {
     function draw() {
       tidy();
       const n = groups.reduce((a, g) => a + g.length, 0);
-      box.innerHTML = `<div class="panel" style="gap:6px"><h3>Check the finds</h3><p class="hint" style="margin:0">${n} ${n === 1 ? "photo" : "photos"} grouped into ${groups.length} ${groups.length === 1 ? "find" : "finds"}. Tap photos to select them, then move them, make them a new find or remove them.</p></div>
+      const noLoc = groups.filter(g => !g.some(x => x.gps)).length;
+      box.innerHTML = `<div class="panel" style="gap:6px"><h3>Check the finds</h3><p class="hint" style="margin:0">${n} ${n === 1 ? "photo" : "photos"} grouped into ${groups.length} ${groups.length === 1 ? "find" : "finds"}. Tap photos to select them, then move them, make them a new find or remove them.</p>${noLoc ? `<div class="btn-row"><button type="button" class="btn small" id="irLocAll"><svg><use href="#i-pin"/></svg>Set location for the ${noLoc} without one</button></div>` : ""}</div>
         <div class="irgroups">${groups.map((g, gi) => `<div class="panel irg" data-g="${gi}">
-          <div class="irhead"><b>Find ${gi + 1}</b><span class="hint num">${g.length} ${g.length === 1 ? "photo" : "photos"} · ${esc(fmtDate(g[0].when.toISOString(), { day: "numeric", month: "short", year: "numeric" }))}, ${esc(fmtTime(g[0].when.toISOString()))}${g.some(x => x.gps) ? "" : " · no location"}</span></div>
+          <div class="irhead"><b>Find ${gi + 1}</b><span class="hint num">${g.length} ${g.length === 1 ? "photo" : "photos"} · ${esc(fmtDate(g[0].when.toISOString(), { day: "numeric", month: "short", year: "numeric" }))}, ${esc(fmtTime(g[0].when.toISOString()))}</span></div>
+          <div class="irloc ${g.some(x => x.gps) ? "ok" : ""}"><svg><use href="#i-pin"/></svg><span>${g.some(x => x.gps) ? (g.some(x => x.manualLoc) ? "Location set" : "Location from the photo") : "No location"}</span><button type="button" class="btn small ghost" data-loc="${gi}">${g.some(x => x.gps) ? "Change" : "Set location"}</button></div>
           <div class="irphotos">${g.map((it, pi) => `<button type="button" class="irph" data-g="${gi}" data-p="${pi}" aria-pressed="${sel.has(it)}" aria-label="Photo ${pi + 1} of find ${gi + 1}"><img src="${url(it)}" alt="" loading="lazy"></button>`).join("")}</div>
           <div class="irtools">
             ${sel.size && !g.some(it => sel.has(it)) ? `<button type="button" class="btn small primary" data-here="${gi}">Move here</button>` : ""}
             ${g.length > 1 ? `<button type="button" class="btn small ghost" data-split="${gi}">Split into ${g.length}</button>` : ""}
             ${gi > 0 ? `<button type="button" class="btn small ghost" data-merge="${gi}">Merge with find ${gi}</button>` : ""}
           </div></div>`).join("")}</div>
-        <div class="irbar">${sel.size ? `<span class="num"><b>${sel.size}</b> selected</span><button type="button" class="btn small" id="irNew">Make new find</button><button type="button" class="btn small danger" id="irDel">Remove</button><button type="button" class="btn small ghost" id="irClear">Clear</button>`
+        <div class="irbar">${sel.size ? `<span class="num"><b>${sel.size}</b> selected</span><button type="button" class="btn small" id="irNew">New find</button><button type="button" class="btn small" id="irLoc" aria-label="Set location for selected"><svg><use href="#i-pin"/></svg></button><button type="button" class="btn small danger" id="irDel">Remove</button><button type="button" class="btn small ghost" id="irClear">Clear</button>`
           : `<button type="button" class="btn ghost" id="irCancel">Cancel</button><button type="button" class="btn primary" id="irOk" style="flex:1" ${n ? "" : "disabled"}>Import ${groups.length} ${groups.length === 1 ? "find" : "finds"}</button>`}</div>`;
     }
     const pull = () => { const moved = []; groups = groups.map(g => g.filter(it => { if (sel.has(it)) { moved.push(it); return false; } return true; })); sel = new Set(); return moved; };
+    const setLoc = async (its, ref) => {
+      const loc = await chooseLocation(ref, `Set location for ${its.length} ${its.length === 1 ? "photo" : "photos"}`);
+      if (!loc) return;
+      its.forEach(it => { it.gps = { lat: loc.lat, lng: loc.lng }; it.manualLoc = loc.src; });
+      draw();
+    };
     box.addEventListener("click", e => {
       const t = e.target.closest("button"); if (!t) return;
+      if (t.dataset.loc != null) { const g = groups[+t.dataset.loc]; return setLoc(g, g[0].when); }
+      if (t.id === "irLocAll") { const its = groups.filter(g => !g.some(x => x.gps)).flat(); return setLoc(its, its[0] && its[0].when); }
+      if (t.id === "irLoc") { const its = [...sel]; sel = new Set(); return setLoc(its, its[0] && its[0].when); }
       if (t.classList.contains("irph")) { const it = groups[+t.dataset.g][+t.dataset.p]; sel.has(it) ? sel.delete(it) : sel.add(it); }
       else if (t.dataset.here != null) { const dest = groups[+t.dataset.here]; const moved = pull(); dest.push(...moved); }
       else if (t.dataset.split != null) { const gi = +t.dataset.split; const g = groups[gi]; groups.splice(gi, 1, ...g.map(it => [it])); }
@@ -2273,6 +2411,7 @@ function openPinSheet(f, onPick) {
   if (f.lat != null) place(L.latLng(f.lat, f.lng));
   if (lastLoc) L.marker([lastLoc.lat, lastLoc.lng], { icon: pinIcon("me"), interactive: false }).addTo(m);
   m.on("click", e => place(e.latlng));
+  addMapSearch(m, { onPick: r => place(L.latLng(r.lat, r.lng)) });
   const close = () => { try { m.remove(); } catch (e) {} maps = maps.filter(x => x !== m); bg.remove(); };
   $("#pinCancel", bg).addEventListener("click", close);
   bg.addEventListener("click", e => { if (e.target === bg) close(); });
@@ -3059,11 +3198,11 @@ async function renderMap() {
   const m = makeMap($("#bigMap"), defaultCenter(), lastLoc ? 13 : (finds.some(f => f.lat != null) ? 12 : 6));
   if (!m) return;
   const layers = { mushroom: L.layerGroup().addTo(m), plant: L.layerGroup().addTo(m) };
-  const pts = [];
+  const pts = [], mkById = {};
   for (const f of finds) {
     if (f.lat == null) continue;
     pts.push([f.lat, f.lng]);
-    const mk = L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(layers[f.type]);
+    const mk = L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(layers[f.type]); mkById[f.id] = mk;
     const pop = document.createElement("div");
     const a = document.createElement("a"); a.href = "#find-" + f.id; a.style.cssText = "color:var(--fg);font-weight:700";
     a.textContent = f.name || "Not yet identified";
@@ -3089,6 +3228,7 @@ async function renderMap() {
   const css = getComputedStyle(document.documentElement);
   const trailLayer = L.layerGroup().addTo(m);
   const saved = ((await store.all("trails").catch(() => [])) || []).sort((x, y) => y.start - x.start);
+  addMapSearch(m, { trails: saved, onPick: r => { if (r.id && mkById[r.id]) setTimeout(() => mkById[r.id].openPopup(), 850); } });
   const hiddenTrails = new Set(lsGet("hiddenTrails", []));
   let livePath = null, armDelete = null;
   function drawTrails() {
@@ -3924,7 +4064,7 @@ async function renderSettings() {
   const hasEx = finds.some(f => f.sample);
   main.innerHTML = `<div class="wrap view"><div class="settings-list">
     <a class="banner danger" href="#safety" style="text-decoration:none"><svg><use href="#i-warn"/></svg><div class="grow"><b>Safety first.</b> Never eat anything based on this app. Read the safety notes.</div></a>
-    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#labels">Specimen labels</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a>${finds.some(f => f.lat == null && !f.sample) ? `<a class="btn small" href="#bulkloc"><svg><use href="#i-pin"/></svg>Add locations (${finds.filter(f => f.lat == null && !f.sample).length})</a>` : ""}<a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#labels">Specimen labels</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <div class="panel"><label class="switch" for="campMode"><span><h3>Camping mode</h3><p>Makes the battery last as long as possible.</p></span><input type="checkbox" id="campMode" ${settings.camp ? "checked" : ""}></label>
       <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on${NATIVE ? " (the Android app records with the screen off anyway)" : ""}.</li></ul></div>
     ${NATIVE ? `<div class="panel"><h3>App updates</h3><p>You have build <b class="num">${APP_BUILD}</b>.${lsGet("updLatest", 0) > APP_BUILD ? ` <b style="color:var(--plant)">Build ${lsGet("updLatest", 0)} is available.</b>` : ""}</p>
