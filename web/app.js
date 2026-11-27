@@ -1471,7 +1471,8 @@ function renderImport() {
       <div class="btn-row"><label class="btn plant" for="impIn"><svg><use href="#i-img"/></svg>Choose photos</label></div>
       <input class="sr" type="file" id="impIn" accept="image/*" multiple>
       <div class="progress" id="impProg" hidden><i></i></div><p id="impMsg" class="hint"></p></div>
-    <p class="hint">Some apps remove the location when sharing photos. Pick them from the gallery or Files instead of a chat app.</p>
+    <p class="hint" id="impTip">Some apps remove the location when sharing photos. Pick them from the gallery or Files instead of a chat app.</p>
+    <div id="impReview"></div>
   </div>`;
   let type = "mushroom";
   $$("#impType button").forEach(b => b.addEventListener("click", () => { type = b.dataset.v; $$("#impType button").forEach(x => x.setAttribute("aria-pressed", x === b)); }));
@@ -1493,6 +1494,14 @@ function renderImport() {
       const near = g && $("#impGroup").checked && Math.abs(it.when - g[g.length - 1].when) <= 10 * 60000 && (!it.gps || !g[0].gps || haversine(it.gps, g[0].gps) <= 0.05);
       if (near) g.push(it); else groups.push([it]);
     }
+    prog.hidden = true; msg.textContent = "";
+    const intro = $(".panel", main); intro.hidden = true; $("#impTip").hidden = true;
+    const reviewed = await reviewImportGroups(groups);
+    intro.hidden = false; $("#impTip").hidden = false; $("#impReview").innerHTML = "";
+    if (!reviewed) { msg.textContent = "Import cancelled. Nothing was saved."; return; }
+    groups.length = 0; groups.push(...reviewed);
+    items.length = 0; groups.forEach(g => items.push(...g));
+    prog.hidden = false;
     let made = 0, withLoc = 0, done = 0;
     for (const g of groups) {
       const photos = [];
@@ -1511,6 +1520,50 @@ function renderImport() {
     await loadFinds();
     msg.textContent = `Imported ${items.length} ${items.length === 1 ? "photo" : "photos"} as ${made} ${made === 1 ? "find" : "finds"}. ${withLoc} had a location${made - withLoc ? `; pin the other ${made - withLoc} on the map when you add details` : ""}.`;
     toast(`Imported ${made} ${made === 1 ? "find" : "finds"}`);
+  });
+}
+// Show the proposed finds before anything is saved, so photos of different mushrooms
+// taken close together can be moved, split, merged or dropped.
+function reviewImportGroups(groups0) {
+  return new Promise(resolve => {
+    let groups = groups0.map(g => [...g]);
+    const urls = new Map();
+    const url = it => { if (!urls.has(it)) urls.set(it, URL.createObjectURL(it.file)); return urls.get(it); };
+    let sel = new Set();
+    const box = $("#impReview");
+    const finish = v => { urls.forEach(u => URL.revokeObjectURL(u)); resolve(v); };
+    const tidy = () => { groups = groups.filter(g => g.length); groups.forEach(g => g.sort((a, b) => a.when - b.when)); groups.sort((a, b) => a[0].when - b[0].when); };
+    function draw() {
+      tidy();
+      const n = groups.reduce((a, g) => a + g.length, 0);
+      box.innerHTML = `<div class="panel" style="gap:6px"><h3>Check the finds</h3><p class="hint" style="margin:0">${n} ${n === 1 ? "photo" : "photos"} grouped into ${groups.length} ${groups.length === 1 ? "find" : "finds"}. Tap photos to select them, then move them, make them a new find or remove them.</p></div>
+        <div class="irgroups">${groups.map((g, gi) => `<div class="panel irg" data-g="${gi}">
+          <div class="irhead"><b>Find ${gi + 1}</b><span class="hint num">${g.length} ${g.length === 1 ? "photo" : "photos"} · ${esc(fmtDate(g[0].when.toISOString(), { day: "numeric", month: "short", year: "numeric" }))}, ${esc(fmtTime(g[0].when.toISOString()))}${g.some(x => x.gps) ? "" : " · no location"}</span></div>
+          <div class="irphotos">${g.map((it, pi) => `<button type="button" class="irph" data-g="${gi}" data-p="${pi}" aria-pressed="${sel.has(it)}" aria-label="Photo ${pi + 1} of find ${gi + 1}"><img src="${url(it)}" alt="" loading="lazy"></button>`).join("")}</div>
+          <div class="irtools">
+            ${sel.size && !g.some(it => sel.has(it)) ? `<button type="button" class="btn small primary" data-here="${gi}">Move here</button>` : ""}
+            ${g.length > 1 ? `<button type="button" class="btn small ghost" data-split="${gi}">Split into ${g.length}</button>` : ""}
+            ${gi > 0 ? `<button type="button" class="btn small ghost" data-merge="${gi}">Merge with find ${gi}</button>` : ""}
+          </div></div>`).join("")}</div>
+        <div class="irbar">${sel.size ? `<span class="num"><b>${sel.size}</b> selected</span><button type="button" class="btn small" id="irNew">Make new find</button><button type="button" class="btn small danger" id="irDel">Remove</button><button type="button" class="btn small ghost" id="irClear">Clear</button>`
+          : `<button type="button" class="btn ghost" id="irCancel">Cancel</button><button type="button" class="btn primary" id="irOk" style="flex:1" ${n ? "" : "disabled"}>Import ${groups.length} ${groups.length === 1 ? "find" : "finds"}</button>`}</div>`;
+    }
+    const pull = () => { const moved = []; groups = groups.map(g => g.filter(it => { if (sel.has(it)) { moved.push(it); return false; } return true; })); sel = new Set(); return moved; };
+    box.addEventListener("click", e => {
+      const t = e.target.closest("button"); if (!t) return;
+      if (t.classList.contains("irph")) { const it = groups[+t.dataset.g][+t.dataset.p]; sel.has(it) ? sel.delete(it) : sel.add(it); }
+      else if (t.dataset.here != null) { const dest = groups[+t.dataset.here]; const moved = pull(); dest.push(...moved); }
+      else if (t.dataset.split != null) { const gi = +t.dataset.split; const g = groups[gi]; groups.splice(gi, 1, ...g.map(it => [it])); }
+      else if (t.dataset.merge != null) { const gi = +t.dataset.merge; groups[gi - 1].push(...groups[gi]); groups.splice(gi, 1); }
+      else if (t.id === "irNew") { const moved = pull(); if (moved.length) groups.push(moved); }
+      else if (t.id === "irDel") { pull(); }
+      else if (t.id === "irClear") { sel = new Set(); }
+      else if (t.id === "irCancel") { box.innerHTML = ""; return finish(null); }
+      else if (t.id === "irOk") { tidy(); box.innerHTML = ""; return finish(groups); }
+      else return;
+      draw();
+    });
+    draw();
   });
 }
 /* ============================================================
