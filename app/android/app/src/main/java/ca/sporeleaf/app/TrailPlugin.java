@@ -1,6 +1,12 @@
 package ca.sporeleaf.app;
 
 import android.Manifest;
+import android.app.Activity;
+import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.annotation.ActivityCallback;
+import java.util.ArrayList;
 import android.content.Intent;
 import android.net.Uri;
 import androidx.core.content.ContextCompat;
@@ -194,5 +200,38 @@ public class TrailPlugin extends Plugin {
         } catch (Exception ignored) {}
         res.put("running", TrailService.running);
         call.resolve(res);
+    }
+
+    // Dictation through the phone's own speech recogniser (the WebView has no Web Speech support).
+    @PluginMethod
+    public void dictate(PluginCall call) {
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        String lang = call.getString("lang");
+        if (lang != null) i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
+        i.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your note");
+        try {
+            startActivityForResult(call, i, "dictateResult");
+        } catch (Exception e) {
+            call.reject("Speech recognition is not available on this phone");
+        }
+    }
+
+    @ActivityCallback
+    private void dictateResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) { call.reject("cancelled"); return; }
+        ArrayList<String> list = result.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        JSObject ret = new JSObject();
+        ret.put("text", list != null && !list.isEmpty() ? list.get(0) : "");
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getContext().getPackageName()));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+        call.resolve();
     }
 }

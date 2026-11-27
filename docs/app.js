@@ -1237,7 +1237,7 @@ async function renderNotebook() {
       <textarea id="nbText" rows="3" placeholder="A note, a spot to check, an idea for next time…">${esc(cur ? cur.text : "")}</textarea>
       <div id="nbVoice"></div>
       <div class="nbbar">
-        ${SpeechRec ? '<button class="btn small ghost" type="button" id="nbDict" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
+        ${canDictate() ? '<button class="btn small ghost" type="button" id="nbDict" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
         ${canRecord() ? '<button class="btn small ghost" type="button" id="nbRec"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="#e0604f"/></svg><span>Record</span></button>' : ""}
         <span style="flex:1"></span>
         ${cur ? '<button class="btn small ghost" type="button" id="nbCancel">Cancel</button>' : ""}
@@ -1262,7 +1262,7 @@ async function renderNotebook() {
   if (rec) rec.addEventListener("click", async () => {
     if (rec._rec) { const { blob, secs } = await rec._rec.stop(); rec._rec = null; $("span", rec).textContent = "Record"; rec.setAttribute("aria-pressed", "false"); voices.push({ blob, secs, at: new Date().toISOString() }); drawVoice(); return; }
     try { rec._rec = await recordVoice(s => { $("span", rec).textContent = `Stop ${s}s`; }); $("span", rec).textContent = "Stop"; rec.setAttribute("aria-pressed", "true"); }
-    catch (e) { toast("Couldn't use the microphone. Check its permission."); }
+    catch (e) { micHelp(e); }
   });
   const cancel = $("#nbCancel"); if (cancel) cancel.addEventListener("click", () => { nbEdit = null; renderNotebook(); });
   $("#nbSave").addEventListener("click", async () => {
@@ -1821,7 +1821,7 @@ async function renderForm(id) {
     <div class="qsec">
       <div class="qnotes-head"><div class="qlbl">Notes</div>
         <div class="qnotes-btns">
-          ${SpeechRec ? '<button class="btn small ghost" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
+          ${canDictate() ? '<button class="btn small ghost" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
           ${canRecord() ? '<button class="btn small ghost" type="button" id="recBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="#e0604f"/></svg><span>Record</span></button>' : ""}
         </div></div>
       <textarea id="notes" rows="2" placeholder="Anything worth remembering">${esc(foldedNotes)}</textarea>
@@ -2108,7 +2108,7 @@ async function renderForm(id) {
   if (recBtn) recBtn.addEventListener("click", async () => {
     if (recBtn._rec) { const { blob, secs } = await recBtn._rec.stop(); recBtn._rec = null; $("span", recBtn).textContent = "Record"; recBtn.setAttribute("aria-pressed", "false"); voices.push({ blob, secs, at: new Date().toISOString() }); drawVoices(); return; }
     try { recBtn._rec = await recordVoice(s => { $("span", recBtn).textContent = `Stop ${s}s`; }); $("span", recBtn).textContent = "Stop"; recBtn.setAttribute("aria-pressed", "true"); }
-    catch (e) { toast("Couldn't use the microphone. Check its permission for this site."); }
+    catch (e) { micHelp(e); }
   });
   const dictBtn = $("#dictBtn");
   if (dictBtn) dictBtn.addEventListener("click", () => { if (dictBtn._r) dictBtn._r.stop(); else dictateInto($("#notes"), dictBtn); });
@@ -2490,6 +2490,13 @@ async function importShared(j) {
    ============================================================ */
 const canRecord = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+// In the Android app, dictation uses the phone's own speech recogniser; the WebView has none.
+const canDictate = () => NATIVE || !!SpeechRec;
+function micHelp(e) {
+  const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError" || e.error === "not-allowed" || /permission/i.test(e.message || ""));
+  if (NATIVE) toast(denied ? "Microphone is off for Shroom Log." : "Couldn't use the microphone.", denied ? { label: "Open settings", run: () => nat("openAppSettings").catch(() => {}) } : null);
+  else toast(denied ? "Microphone is blocked for this site. Tap the icon left of the web address, then Permissions, and allow Microphone." : "Couldn't use the microphone.");
+}
 async function recordVoice(onState, maxMs = 120000) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const rec = new MediaRecorder(stream);
@@ -2503,6 +2510,16 @@ async function recordVoice(onState, maxMs = 120000) {
   return { stop: () => { clearTimeout(timer); clearInterval(tick); if (rec.state === "recording") rec.stop(); return done; } };
 }
 function dictateInto(textarea, btn) {
+  if (NATIVE) {
+    const lab = $("span", btn) || btn;
+    btn._r = { stop() {} }; lab.textContent = "Listening…"; btn.setAttribute("aria-pressed", "true");
+    nat("dictate", { lang: navigator.language || "en-CA" }).then(r => {
+      const t = (r && r.text || "").trim();
+      if (t) { textarea.value = (textarea.value ? textarea.value.replace(/\s*$/, " ") : "") + t; textarea.dispatchEvent(new Event("input", { bubbles: true })); }
+    }).catch(e => { const m = String(e && e.message || e); if (/permission/i.test(m)) micHelp({ error: "not-allowed" }); else if (!/cancel/i.test(m)) toast(/available/i.test(m) ? "This phone has no speech recogniser. Use Record instead." : "Dictation stopped"); })
+      .finally(() => { lab.textContent = "Dictate"; btn.setAttribute("aria-pressed", "false"); btn._r = null; });
+    return;
+  }
   if (!SpeechRec) return;
   const r = new SpeechRec();
   r.lang = navigator.language || "en-CA"; r.interimResults = true; r.continuous = true;
@@ -2513,7 +2530,7 @@ function dictateInto(textarea, btn) {
     for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finalText += t; else interim += t; }
     textarea.value = base + finalText + interim;
   };
-  r.onerror = e => { toast(e.error === "network" ? "Dictation needs signal on this phone. Record a voice note instead." : e.error === "not-allowed" ? "Microphone permission is off" : "Dictation stopped"); };
+  r.onerror = e => { if (e.error === "not-allowed" || e.error === "service-not-allowed") micHelp({ error: "not-allowed" }); else toast(e.error === "network" ? "Dictation needs signal on this phone. Record a voice note instead." : "Dictation stopped"); };
   const lab = $("span", btn) || btn;
   r.onend = () => { lab.textContent = "Dictate"; btn.setAttribute("aria-pressed", "false"); btn._r = null; };
   r.start(); btn._r = r; lab.textContent = "Stop"; btn.setAttribute("aria-pressed", "true");
@@ -2523,7 +2540,7 @@ async function voiceQuickLog(btn) {
   try {
     btn._rec = await recordVoice(s => { $("b", btn).textContent = `Recording ${s}s · tap to save`; });
     $("b", btn).textContent = "Recording · tap to save";
-  } catch (e) { toast("Couldn't use the microphone. Check its permission for this site."); }
+  } catch (e) { micHelp(e); }
 }
 async function saveVoiceFind(blob, secs) {
   toast("Saving…");
