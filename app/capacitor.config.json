@@ -1,6 +1,6 @@
 {
   "appId": "ca.sporeleaf.app",
-  "appName": "Spore & Leaf",
+  "appName": "Shroom Log",
   "webDir": "www",
   "android": { "allowMixedContent": false },
   "server": { "androidScheme": "https" }

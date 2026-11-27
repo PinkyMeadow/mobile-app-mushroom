@@ -38,12 +38,13 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk ../../spore-leaf.apk
+          cp app/build/outputs/apk/release/app-release.apk ../../shroom-log.apk
+          cp ../../shroom-log.apk ../../spore-leaf.apk
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" spore-leaf.apk \
-            --title "Spore & Leaf, build ${{ github.run_number }}" \
-            --notes "Android app, build ${{ github.run_number }}. On your phone, download spore-leaf.apk and tap it to install. It installs over the previous build and keeps your finds. Never eat anything based on this app." \
+          gh release create "build-${{ github.run_number }}" shroom-log.apk spore-leaf.apk \
+            --title "Shroom Log, build ${{ github.run_number }}" \
+            --notes "Android app, build ${{ github.run_number }}. On your phone, download shroom-log.apk and tap it to install. It installs over the previous build and keeps your finds. Never eat anything based on this app." \
             --latest

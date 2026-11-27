@@ -1,4 +1,4 @@
-/* Spore & Leaf: offline mushroom key and anatomy guide.
+/* Shroom Log: offline mushroom key and anatomy guide.
    A key narrows things down to a group. It never confirms that anything is safe to eat. */
 
 const KEY = {

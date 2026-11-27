@@ -1,5 +1,5 @@
 "use strict";
-/* Spore & Leaf: an offline-first field log for mushrooms and plants. */
+/* Shroom Log: an offline-first field log for mushrooms and plants. */
 
 /* ============================================================
    Storage: IndexedDB, with an in-memory fallback.
@@ -60,7 +60,7 @@ const APP_BUILD = 0;
 const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 const nat = (method, opts) => window.Capacitor.nativePromise("TrailGPS", method, opts || {});
 const REPO = "PinkyMeadow/mobile-app-mushroom";
-const APK_URL = `https://github.com/${REPO}/releases/latest/download/spore-leaf.apk`;
+const APK_URL = `https://github.com/${REPO}/releases/latest/download/shroom-log.apk`;
 function openExternal(url) { if (NATIVE) nat("openUrl", { url }).catch(() => { location.href = url; }); else window.open(url, "_blank", "noopener"); }
 // Looks for a newer Android build on GitHub. Runs at most once a day unless asked.
 async function checkForUpdate(manual) {
@@ -685,7 +685,7 @@ async function quickLog(file) {
    Finds list
    ============================================================ */
 function matches(f) {
-  if (view.filter === "todo") { if (!f.needsDetails) return false; }
+  if (view.filter === "todo") { if (!missingInfo(f).length) return false; }
   else if (view.filter !== "all" && f.type !== view.filter) return false;
   for (const q of view.quick) { const d = QUICK.find(x => x[0] === q); if (d && !d[2](f)) return false; }
   if (view.trip && f.tripId !== view.trip) return false;
@@ -711,14 +711,24 @@ function groupKey(f) {
   if (view.sort === "newest" || view.sort === "oldest") return MONTHS[d.getMonth()] + " " + d.getFullYear();
   return null;
 }
+// What a find is still missing, so it can be finished later.
+function missingInfo(f) {
+  if (f.sample) return [];
+  const m = [];
+  if (!f.name) m.push("name");
+  if (!f.photos || !f.photos.length) m.push("photo");
+  if (f.lat == null) m.push("location");
+  if (f.needsDetails && !m.length) m.push("details");
+  return m;
+}
 function cardHTML(f) {
   const dist = lastLoc && f.lat != null ? fmtDist(haversine(lastLoc, f)) : null;
   const dateStr = view.sort === "season" ? fmtDate(f.foundAt) : fmtDate(f.foundAt, { weekday: "short", day: "numeric", month: "short" });
   return `<a class="card" href="#find-${esc(f.id)}">
     <img class="thumb" data-photo="${esc(cover(f) || "")}" alt="">
     <div class="card-body">
-      <div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}</div>
-      <div class="meta"><span class="dot ${f.type}"></span><span>${f.type === "plant" ? "Plant" : "Mushroom"}</span>${f.needsDetails ? '<span class="badge-todo">Add details</span>' : ""}${f.revisit ? '<span class="badge-rv">Revisit</span>' : ""}${f.inat && f.inat.quality === "research" ? '<span class="badge-rv">iNat confirmed</span>' : ""}${f.sample ? '<span class="badge-ex">Example</span>' : ""}${f.sharedFrom ? `<span class="badge-rv" style="color:var(--shroom);border-color:color-mix(in srgb, var(--shroom) 50%, transparent)">From ${esc(f.sharedFrom)}</span>` : ""}${!f.photos.length && f.voice.length ? '<span class="badge-rv">Voice</span>' : ""}</div>
+      <div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}<span class="edot ${esc(f.edibility || "unknown")}" title="${esc(edibLabel(f.edibility))}" aria-label="${esc(edibLabel(f.edibility))}"></span></div>
+      <div class="meta"><span class="dot ${f.type}"></span><span>${f.type === "plant" ? "Plant" : "Mushroom"}</span>${missingInfo(f).length ? `<span class="badge-todo">Needs ${esc(missingInfo(f).join(", "))}</span>` : ""}${f.revisit ? '<span class="badge-rv">Revisit</span>' : ""}${f.inat && f.inat.quality === "research" ? '<span class="badge-rv">iNat confirmed</span>' : ""}${f.sample ? '<span class="badge-ex">Example</span>' : ""}${f.sharedFrom ? `<span class="badge-rv" style="color:var(--shroom);border-color:color-mix(in srgb, var(--shroom) 50%, transparent)">From ${esc(f.sharedFrom)}</span>` : ""}${!f.photos.length && f.voice.length ? '<span class="badge-rv">Voice</span>' : ""}</div>
       <div class="meta num"><span>${esc(dateStr)}</span><span class="sep">${esc(fmtTime(f.foundAt))}</span>${dist ? `<span class="sep">${esc(dist)} away</span>` : f.lat == null ? '<span class="sep">No location</span>' : ""}</div>
     </div>
   </a>`;
@@ -731,40 +741,45 @@ async function hydrateThumbs(root) {
   }
 }
 function renderLog() {
-  setChrome({ title: "Spore & Leaf", tab: "log" });
+  setChrome({ title: "Shroom Log", tab: "log" });
   main.innerHTML = `<div class="wrap view">
     ${finds.some(f => f.sample) ? `<div class="banner warn"><svg><use href="#i-warn"/></svg><div class="grow">The finds marked <b>Example</b> show how the log looks. They'll disappear when you save your first find.</div></div>` : ""}
-    <label class="quick" for="quickIn"><span class="qi"><svg><use href="#i-bolt"/></svg></span><span><b>Quick log</b><span>One tap: photo, location and time saved now. Add the details later.</span></span></label>
+    <div id="fruitBanner"></div>
+    <div class="quickrow"><label class="quick" for="quickIn"><span class="qi"><svg><use href="#i-bolt"/></svg></span><span><b>Quick log</b><span>Photo now, details later</span></span></label>
     <input class="sr" type="file" id="quickIn" accept="image/*" capture="environment">
-    ${canRecord() ? `<button type="button" class="quick" id="voiceQuick" style="text-align:left;color:inherit;font:inherit"><span class="qi" style="background:var(--plant);color:var(--plant-ink)"><svg><use href="#i-mic"/></svg></span><span><b>Voice log</b><span>Hands-free: say what you found. Location and time are saved too.</span></span></button>` : ""}
+    ${canRecord() ? `<button type="button" class="quick" id="voiceQuick" style="text-align:left;color:inherit;font:inherit"><span class="qi" style="background:var(--plant);color:var(--plant-ink)"><svg><use href="#i-mic"/></svg></span><span><b>Voice log</b><span>Say what you found</span></span></button>` : ""}</div>
     ${finds.some(f => f.idReview) ? `<a class="banner" href="#review" style="text-decoration:none;color:var(--fg)"><svg style="color:var(--plant)"><use href="#i-edit"/></svg><div class="grow"><b>${finds.filter(f => f.idReview).length} ID ${finds.filter(f => f.idReview).length === 1 ? "change" : "changes"} to review</b> from iNaturalist. Nothing changes until you choose.</div></a>` : ""}
     ${activeTripId() && tripById(activeTripId()) ? `<a class="banner" href="#trip-${esc(activeTripId())}" style="text-decoration:none;color:var(--fg)"><svg style="color:var(--shroom)"><use href="#i-map"/></svg><div class="grow"><b>On a trip: ${esc(tripById(activeTripId()).name)}.</b> New finds are added to it.</div></a>` : `<a href="#trips" class="hint" style="color:var(--plant);font-weight:700;text-decoration:none">Start a trip ›</a>`}
     ${settings.camp ? `<a class="banner warn" href="#more" style="text-decoration:none;color:inherit"><svg><use href="#i-bolt"/></svg><div class="grow"><b>Camping mode is on.</b> Nothing goes online, to save battery.</div></a>` : ""}
-    <div id="fruitBanner"></div>
     <div class="toolbar">
-      <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="q" placeholder="Search names and notes" value="${esc(view.q)}" autocomplete="off" enterkeyhint="search" aria-label="Search finds"></div>
-      <div class="seg" role="group" aria-label="Show" id="filterSeg"></div>
-      <div class="chips" id="quickRow" role="group" aria-label="Quick filters"></div>
-      <div class="sortrow"><label for="sortSel">Sort</label>
-        <select id="sortSel">
+      <div class="toprow"><div class="search" style="flex:1;min-width:0"><svg><use href="#i-search"/></svg><input type="text" id="q" placeholder="Search finds" value="${esc(view.q)}" autocomplete="off" enterkeyhint="search" aria-label="Search finds"></div>
+        <label class="tbtn" title="Sort"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr">Sort</span>
+        <select id="sortSel" aria-label="Sort">
           <option value="newest">Newest first, by month</option>
           <option value="oldest">Oldest first, by month</option>
           <option value="season">Month of the year</option>
           <option value="nearest">Nearest to me</option>
           <option value="name">Name, A to Z</option>
-        </select></div>
+        </select></label>
+        <button type="button" class="tbtn" id="layoutBtn" aria-label="${lsGet("layout", "list") === "grid" ? "Show as a list" : "Show as photo grid"}">${lsGet("layout", "list") === "grid"
+          ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`
+          : `<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></g></svg>`}</button></div>
+      <div class="chiprow" role="group" aria-label="Filters"><div id="filterSeg" class="chips"></div><span class="vsep" aria-hidden="true"></span><div class="chips" id="quickRow"></div></div>
       <div id="sortNote"></div>
-      <div id="sunLine">${sunsetHTML()}</div>
+      <div id="sunLine" class="sunmini">${sunsetHTML()}</div>
     </div>
-    <div id="results" style="display:flex;flex-direction:column;gap:16px"></div>
+    <div id="results" class="${lsGet("layout", "list") === "grid" ? "gridview" : ""}" style="display:flex;flex-direction:column;gap:16px"></div>
   </div>`;
   $("#sortSel").value = view.sort;
+  $("#layoutBtn").addEventListener("click", () => { lsSet("layout", lsGet("layout", "list") === "grid" ? "list" : "grid"); renderLog(); });
   const vq = $("#voiceQuick"); if (vq) vq.addEventListener("click", () => voiceQuickLog(vq));
-  checkFruiting(false).then(r => {
+  // Today's fruiting outlook, with any of your own spots that look good.
+  Promise.all([fruitOutlook().catch(() => null), checkFruiting(false).catch(() => null)]).then(([o, r]) => {
     const hits = (r && r.hits || []).filter(h => finds.some(f => f.id === h.id));
-    const fb = $("#fruitBanner"); if (!fb || !hits.length) return;
-    fb.innerHTML = `<a class="banner" href="#season" style="text-decoration:none;background:color-mix(in srgb, var(--plant) 16%, var(--surface));color:var(--fg)"><svg style="color:var(--plant)"><use href="#i-cloud"/></svg><div class="grow"><b>${hits.length} past ${hits.length === 1 ? "spot looks" : "spots look"} good right now.</b> In season, with rain this week. See the Season tab.</div></a>`;
-  }).catch(() => {});
+    const fb = $("#fruitBanner"); if (!fb || (!o && !hits.length)) return;
+    const col = o ? { Good: "var(--plant)", Fair: "var(--shroom)", Poor: "var(--muted)", "Off season": "var(--muted)" }[o.level] : "var(--plant)";
+    fb.innerHTML = `<a class="outlook" href="#season"><span class="olvl" style="color:${col}">${o ? esc(o.level) : "Good"}</span><span class="grow"><b>Today's fruiting outlook</b><span class="hint num">${o ? `${o.rain} mm rain this week · ${o.temp} °C average${o.stale ? " · " + esc(ago(o.ts)) : ""}` : ""}${hits.length ? `${o ? " · " : ""}<b style="color:var(--plant)">${hits.length} of your ${hits.length === 1 ? "spots looks" : "spots look"} good</b>` : ""}</span></span><svg class="gchev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></a>`;
+  });
   $("#quickIn").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) quickLog(f); });
   $("#q").addEventListener("input", e => { view.q = e.target.value.trim(); renderResults(); });
   $("#sortSel").addEventListener("change", async e => {
@@ -776,11 +791,11 @@ function renderLog() {
 }
 function renderResults() {
   const counts = { all: finds.length, mushroom: 0, plant: 0, todo: 0 };
-  finds.forEach(f => { counts[f.type]++; if (f.needsDetails) counts.todo++; });
+  finds.forEach(f => { counts[f.type]++; if (missingInfo(f).length) counts.todo++; });
   if (view.filter === "todo" && !counts.todo) view.filter = "all";
   const segs = [["all", "All"], ["mushroom", "Mushrooms"], ["plant", "Plants"]];
-  if (counts.todo) segs.push(["todo", "To finish"]);
-  $("#filterSeg").innerHTML = segs.map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${view.filter === v}">${l} <span class="num" style="opacity:.7">${counts[v]}</span></button>`).join("");
+  if (counts.todo) segs.push(["todo", "Needs details"]);
+  $("#filterSeg").innerHTML = segs.map(([v, l]) => `<button type="button" class="chip k-${v}" data-v="${v}" aria-pressed="${view.filter === v}">${l} <span class="num" style="opacity:.7">${counts[v]}</span></button>`).join("");
   $$("#filterSeg button").forEach(b => b.addEventListener("click", () => { view.filter = b.dataset.v; lsSet("filter", view.filter); renderResults(); }));
 
   const trips = tripList();
@@ -833,7 +848,7 @@ function renderResults() {
     items.push(cardHTML(f));
   }
   flush();
-  res.innerHTML = (keys.length > 1 ? `<div class="btn-row" style="justify-content:flex-end;margin-bottom:-4px"><button class="btn ghost small" type="button" id="mAll">Open all</button><button class="btn ghost small" type="button" id="mNone">Close all</button></div>` : "") + html;
+  res.innerHTML = (keys.length > 1 ? `<div class="mtools"><button type="button" id="mAll">Open all</button><span aria-hidden="true">·</span><button type="button" id="mNone">Close all</button></div>` : "") + html;
   const saveOpen = () => { if (!allOpen) lsSet("logOpen:" + view.sort, $$(".mgroup", res).filter(d => d.open).map(d => d.dataset.k)); };
   $$(".mgroup", res).forEach(d => d.addEventListener("toggle", () => { saveOpen(); if (d.open) hydrateThumbs(d); }));
   const ma = $("#mAll"); if (ma) ma.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = true; }); saveOpen(); });
@@ -1020,7 +1035,7 @@ function renderPack() {
   const done = new Set(lsGet("packDone", [])), extra = lsGet("packExtra", []);
   const groups = [...PACK, ...(extra.length ? [["Your items", extra]] : [])];
   const total = groups.reduce((a, g) => a + g[1].length, 0), n = groups.reduce((a, g) => a + g[1].filter(x => done.has(x)).length, 0);
-  main.innerHTML = `<div class="wrap view">
+  main.innerHTML = `<div class="wrap view checklist">
     <p class="num"><b>${n} of ${total} packed</b></p>
     ${groups.map(([g, items]) => `<div class="panel" style="gap:4px"><h3>${esc(g)}</h3>${items.map(x => `<label class="switch" style="font-size:15px"><span>${esc(x)}</span><span style="display:flex;gap:6px;align-items:center">${g === "Your items" ? `<button type="button" class="btn small ghost" data-rm="${esc(x)}" aria-label="Remove ${esc(x)}">×</button>` : ""}<input type="checkbox" data-item="${esc(x)}" ${done.has(x) ? "checked" : ""}></span></label>`).join("")}</div>`).join("")}
     <div class="panel"><div class="btn-row"><input type="text" id="packNew" placeholder="Add your own item" style="flex:1"><button class="btn small plant" type="button" id="packAdd">Add</button></div></div>
@@ -1245,7 +1260,7 @@ async function renderHike(id) {
   $("#hikeGpx").addEventListener("click", async () => {
     const pts = (t.points || []).map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[3] != null ? `<ele>${p[3]}</ele>` : ""}<time>${new Date(p[2]).toISOString()}</time></trkpt>`).join("\n");
     const name = (t.name || "Hike " + new Date(t.start).toISOString().slice(0, 10)).replace(/[<&>]/g, "");
-    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Spore and Leaf" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>\n${pts}\n</trkseg></trk></gpx>\n`;
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Shroom Log" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>\n${pts}\n</trkseg></trk></gpx>\n`;
     await saveFile(`hike-${new Date(t.start).toISOString().slice(0, 10)}.gpx`, gpx, "application/gpx+xml");
   });
   $("#hikeDel").addEventListener("click", async () => {
@@ -1295,7 +1310,7 @@ function labelQR(text) {
   try { qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"]; const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); } catch (e) { return ""; }
 }
 function labelText(f) {
-  return [`Spore & Leaf ${f.id}`, f.name || "Not yet identified", fmtDate(f.foundAt) + " " + fmtTime(f.foundAt), f.lat != null ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}` : "", f.substrate ? "On: " + f.substrate : "", (f.habitat || []).join(", "), f.trees ? "Near: " + f.trees : "", f.spore ? "Spore print: " + f.spore : "", lsGet("collector", "") ? "Collector: " + lsGet("collector", "") : ""].filter(Boolean).join("\n");
+  return [`Shroom Log ${f.id}`, f.name || "Not yet identified", fmtDate(f.foundAt) + " " + fmtTime(f.foundAt), f.lat != null ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}` : "", f.substrate ? "On: " + f.substrate : "", (f.habitat || []).join(", "), f.trees ? "Near: " + f.trees : "", f.spore ? "Spore print: " + f.spore : "", lsGet("collector", "") ? "Collector: " + lsGet("collector", "") : ""].filter(Boolean).join("\n");
 }
 function labelHTML(f) {
   const where = f.lat != null ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}` : "No location";
@@ -1628,7 +1643,7 @@ async function renderDetail(id) {
   const cb = $("#compassBtn"); if (cb) cb.addEventListener("click", () => openCompass(f));
   $("#shareOne").addEventListener("click", () => {
     const row = $("#shareOne").parentElement;
-    row.outerHTML = `<div class="panel" id="sharePanel"><h3>Share this find</h3><label class="switch" for="blurOne"><span>Hide the exact spot (about 1 km)</span><input type="checkbox" id="blurOne" checked></label><div class="btn-row"><button class="btn small primary" type="button" id="shareGo"><svg><use href="#i-share"/></svg>Share</button></div><p class="hint">Sends a file by message, email or Drive. Your buddy opens it in Spore & Leaf under More.</p></div>`;
+    row.outerHTML = `<div class="panel" id="sharePanel"><h3>Share this find</h3><label class="switch" for="blurOne"><span>Hide the exact spot (about 1 km)</span><input type="checkbox" id="blurOne" checked></label><div class="btn-row"><button class="btn small primary" type="button" id="shareGo"><svg><use href="#i-share"/></svg>Share</button></div><p class="hint">Sends a file by message, email or Drive. Your buddy opens it in Shroom Log under More.</p></div>`;
     $("#shareGo").addEventListener("click", () => sendShare([f], $("#blurOne").checked));
   });
   $("#delBtn").addEventListener("click", () => trashFind(f, () => { location.hash = "log"; }));
@@ -2221,6 +2236,22 @@ function sendAlert(title, body) {
   if (NATIVE) { nat("showAlert", { title, body }).catch(() => {}); return; }
   try { new Notification(title, { body, icon: "icon.svg" }); } catch (e) {}
 }
+// Rain and warmth over the past week where you are, as a simple Good / Fair / Poor.
+async function fruitOutlook() {
+  const c = lsGet("outlook", null);
+  const here = lastLoc || (c && { lat: c.lat, lng: c.lng });
+  if (!here) return null;
+  const fresh = c && Date.now() - c.ts < 3 * 3600000 && haversine(here, c) < 20;
+  if (fresh || !netOK()) return c ? { ...c, stale: !fresh } : null;
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${here.lat.toFixed(2)}&longitude=${here.lng.toFixed(2)}&daily=precipitation_sum,temperature_2m_mean&past_days=7&forecast_days=1&timezone=auto`);
+  if (!r.ok) throw new Error("weather");
+  const d = (await r.json()).daily; if (!d) return null;
+  const rain = d.precipitation_sum.slice(0, 7).reduce((a, x) => a + (x || 0), 0);
+  const ts = d.temperature_2m_mean.slice(0, 7).filter(x => x != null), temp = ts.reduce((a, x) => a + x, 0) / (ts.length || 1);
+  const level = temp < 2 ? "Off season" : rain >= 15 && temp >= 5 && temp <= 22 ? "Good" : rain >= 6 && temp >= 3 && temp <= 26 ? "Fair" : "Poor";
+  const o = { ts: Date.now(), lat: here.lat, lng: here.lng, rain: Math.round(rain), temp: Math.round(temp), level };
+  lsSet("outlook", o); return o;
+}
 async function checkFruiting(force) {
   const cached = lsGet("fruiting", null);
   if (!force && cached && Date.now() - cached.ts < 6 * 3600000) return cached;
@@ -2398,10 +2429,10 @@ async function sendShare(list, blur) {
   if (!list.length) { toast("Nothing to share"); return; }
   toast("Getting the file ready…");
   const data = JSON.stringify(await buildShare(list, blur));
-  const name = `spore-and-leaf-from-${slug(lsGet("buddyName", "me"))}-${stamp()}.json`;
+  const name = `shroom-log-from-${slug(lsGet("buddyName", "me"))}-${stamp()}.json`;
   try {
     const file = new File([data], name, { type: "application/json" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Spore & Leaf finds", text: `${list.length} ${list.length === 1 ? "find" : "finds"} from Spore & Leaf. Open the app, go to More, and tap Open a shared file.` }); return; }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Shroom Log finds", text: `${list.length} ${list.length === 1 ? "find" : "finds"} from Shroom Log. Open the app, go to More, and tap Open a shared file.` }); return; }
   } catch (e) { if (e && e.name === "AbortError") return; }
   if (await saveFile(name, data, "application/json")) toast("Share file saved. Send it to your buddy.");
 }
@@ -3176,22 +3207,27 @@ async function renderEdibles() {
   setChrome({ title: "In season", tab: "edibles" });
   const place = edPlace();
   main.innerHTML = `<div class="wrap view">
-    <div class="btn-row"><a class="btn small" href="#guides">Beginner guides and tree ID</a><a class="btn small ghost" href="#pack">Packing list</a></div>
-    <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>A guide to what to look for, not permission to eat.</b> Every one of these has lookalikes, some deadly. Have each find checked in person by an expert before eating.</div></div>
-    <div class="panel" style="gap:12px">
+    ${Date.now() - lsGet("edWarnHid", 0) > 7 * DAY ? `<div class="slimwarn" id="edWarn"><svg><use href="#i-warn"/></svg><span class="grow"><b>Not permission to eat.</b> Every one has lookalikes, some deadly.</span><button type="button" class="icon-btn" id="edWarnX" aria-label="Hide for a week">×</button></div>` : ""}
+    <details class="edarea" id="edArea"><summary><svg><use href="#i-gps"/></svg><span class="grow"><b>${esc(place ? place.name : "Choose an area")}</b>${place ? ` · ${edUsesBoundary(place) ? "whole area" : edView.radius + " km"}` : ""}</span><span class="hint">Change</span></summary>
+    <div class="panel" style="gap:12px;margin-top:8px">
       <div class="switch" style="align-items:flex-start"><span style="min-width:0"><span class="eyebrow">Area</span><br><b id="edPlaceName" style="font-size:18px">${esc(place ? place.name : "Choose an area")}</b></span>
         ${edView.place ? `<button class="btn small ghost" type="button" id="edNear"><svg><use href="#i-gps"/></svg>Near me</button>` : ""}</div>
       <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edSearch" placeholder="Search another area, e.g. Algonquin Park" autocomplete="off" aria-label="Search for an area"></div>
       <div id="edResults" class="settings-list"></div>
       ${place ? `<div><span class="eyebrow">Search radius</span><div class="chips" id="edRadius" role="group" aria-label="Search radius" style="margin-top:6px">${place.placeId ? `<button type="button" class="chip" data-r="area" aria-pressed="${edUsesBoundary(place)}">Whole area</button>` : ""}${ED_RADII.map(r => `<button type="button" class="chip" data-r="${r}" aria-pressed="${!edUsesBoundary(place) && edView.radius === r}">${r} km</button>`).join("")}</div></div>` : ""}
     </div>
-    <div class="chips" id="edMonths" role="group" aria-label="Month" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${MONTHS3.map((m, i) => `<button type="button" class="chip" data-m="${i + 1}" aria-pressed="${edView.month === i + 1}" style="flex:none">${m}</button>`).join("")}</div>
-    <div class="seg" role="group" aria-label="Show" id="edKind">${[["all", "All"], ["mushroom", "Mushrooms"], ["plant", "Plants"]].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${edView.kind === v}">${l}</button>`).join("")}</div>
-    <div class="search"><svg><use href="#i-search"/></svg><input type="text" id="edFilter" placeholder="Filter species" value="${esc(edView.q)}" autocomplete="off" aria-label="Filter species"></div>
+    </details>
+    <div class="chips" id="edMonths" role="group" aria-label="Month" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:none">${MONTHS3.map((m, i) => `<button type="button" class="chip" data-m="${i + 1}" aria-pressed="${edView.month === i + 1}" style="flex:none">${m}</button>`).join("")}</div>
+    <div class="toprow"><div class="search" style="flex:1;min-width:0"><svg><use href="#i-search"/></svg><input type="text" id="edFilter" placeholder="Filter species" value="${esc(edView.q)}" autocomplete="off" aria-label="Filter species"></div>
+      <div class="seg small" role="group" aria-label="Show" id="edKind">${[["all", "All"], ["mushroom", "Fungi"], ["plant", "Plants"]].map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${edView.kind === v}">${l}</button>`).join("")}</div></div>
     <div id="edNoData"></div>
     <div class="context-note" id="edStatus"></div>
     <div class="list" id="edList" style="grid-template-columns:1fr"></div>
+    <p class="hint" style="margin:0">Never eat anything based on this app. Have each find checked in person by an expert. <a href="#guides" style="color:var(--plant)">Beginner guides</a> · <a href="#pack" style="color:var(--plant)">Packing list</a></p>
   </div>`;
+  { const x = $("#edWarnX"); if (x) x.addEventListener("click", () => { lsSet("edWarnHid", Date.now()); $("#edWarn").remove(); }); }
+  // Open the area picker straight away if no area is known yet.
+  if (!place) $("#edArea").open = true;
   let counts = null, wx = null, noData = false, taxa = lsGet("taxa2", {});
   const scope = () => edUsesBoundary(place) ? `in ${place.name}` : `within ${edView.radius} km`;
   const biggerHint = () => edUsesBoundary(place) ? "Try a radius instead of the area boundary." : edView.radius < 150 ? "Try a bigger radius." : "";
@@ -3247,7 +3283,7 @@ async function renderEdibles() {
       </div>`;
     };
     const legCol = edView.kind === "plant" ? "var(--chart-plant)" : "var(--chart-shroom)";
-    const legend = `<div class="panel" style="gap:6px;padding:12px 14px"><b>How to read the month bars</b><div style="display:flex;flex-wrap:wrap;gap:10px 16px;font-size:13px">${(counts ? [[3, "Peak: its busiest months here"], [2, "Common"], [1, "Possible, but few records"], [0, "No records"]] : [[3, "Typical season"], [0, "Not usual"]]).map(([L, n]) => `<span style="display:inline-flex;align-items:flex-end;gap:6px"><span style="display:inline-block;width:12px;height:${[4, 9, 17, 22][L]}px;border-radius:2px;background:${edSwatch(L, legCol)}"></span>${n}</span>`).join("")}</div><span class="hint">Taller and brighter means more likely. The outlined month is the one you picked.</span></div>`;
+    const legend = `<details class="panel edmore" style="gap:6px;padding:10px 14px"><summary>How to read the month bars</summary><div style="display:flex;flex-wrap:wrap;gap:10px 16px;font-size:13px">${(counts ? [[3, "Peak: its busiest months here"], [2, "Common"], [1, "Possible, but few records"], [0, "No records"]] : [[3, "Typical season"], [0, "Not usual"]]).map(([L, n]) => `<span style="display:inline-flex;align-items:flex-end;gap:6px"><span style="display:inline-block;width:12px;height:${[4, 9, 17, 22][L]}px;border-radius:2px;background:${edSwatch(L, legCol)}"></span>${n}</span>`).join("")}</div><span class="hint">Taller and brighter means more likely. The outlined month is the one you picked.</span></details>`;
     $("#edList").innerHTML = legend + (inS.length ? `<h3 style="font-size:18px">Likely in ${MONTHS[m - 1]}</h3>` + inS.map(card).join("") : `<p class="hint">Nothing on this list is usually found here in ${MONTHS[m - 1]}.</p>`)
       + (rest.length ? `<details class="panel"><summary style="cursor:pointer;font-weight:700">Not usually found in ${MONTHS[m - 1]} (${rest.length})</summary><div class="settings-list" style="margin-top:10px">${rest.map(card).join("")}</div></details>` : "");
     let st = "";
@@ -3729,21 +3765,21 @@ async function exportBackup() {
     if (rec) photos[p.key] = typeof rec === "string" ? rec : await blobToDataURL(rec);
   }
   const json = JSON.stringify({ app: "spore-and-leaf", version: 1, exportedAt: new Date().toISOString(), finds, photos, trips: lsGet("trips", []) });
-  const ok = await saveFile(`spore-and-leaf-backup-${stamp()}.json`, json, "application/json");
+  const ok = await saveFile(`shroom-log-backup-${stamp()}.json`, json, "application/json");
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
 async function exportCSV() {
   const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","elevation_m","slope_deg","slopeFaces","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
   const q = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", f.elev, f.slope, f.aspect == null ? "" : compassName(f.aspect), (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
-  const ok = await saveFile(`spore-and-leaf-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
+  const ok = await saveFile(`shroom-log-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
   if (ok) toast("Spreadsheet saved");
 }
 async function importBackup(file) {
   try {
     const j = JSON.parse(await file.text());
     if (j.app === "spore-and-leaf-share" && Array.isArray(j.finds)) return await importShared(j);
-    if (j.app !== "spore-and-leaf" || !Array.isArray(j.finds)) throw new Error("That file isn't a Spore & Leaf backup.");
+    if (j.app !== "spore-and-leaf" || !Array.isArray(j.finds)) throw new Error("That file isn't a Shroom Log backup.");
     const have = new Set(finds.map(f => f.id));
     let added = 0;
     if (Array.isArray(j.trips)) { const mine = lsGet("trips", []); const ids = new Set(mine.map(t => t.id)); saveTrips([...mine, ...j.trips.filter(t => !ids.has(t.id))]); }
@@ -3781,13 +3817,13 @@ async function renderSettings() {
   const hasEx = finds.some(f => f.sample);
   main.innerHTML = `<div class="wrap view"><div class="settings-list">
     <a class="banner danger" href="#safety" style="text-decoration:none"><svg><use href="#i-warn"/></svg><div class="grow"><b>Safety first.</b> Never eat anything based on this app. Read the safety notes.</div></a>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#labels">Specimen labels</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <div class="panel"><label class="switch" for="campMode"><span><h3>Camping mode</h3><p>Makes the battery last as long as possible.</p></span><input type="checkbox" id="campMode" ${settings.camp ? "checked" : ""}></label>
       <ul class="hint" style="margin:0;padding-left:20px"><li>Nothing goes online: weather, iNaturalist and map downloads wait until you turn it off. Saved maps still work.</li><li>Pure black screen and no animations.</li><li>GPS only wakes when you log a find, and photo locations are used first.</li><li>Hikes don't keep the screen on${NATIVE ? " (the Android app records with the screen off anyway)" : ""}.</li></ul></div>
     ${NATIVE ? `<div class="panel"><h3>App updates</h3><p>You have build <b class="num">${APP_BUILD}</b>.${lsGet("updLatest", 0) > APP_BUILD ? ` <b style="color:var(--plant)">Build ${lsGet("updLatest", 0)} is available.</b>` : ""}</p>
       <div class="btn-row"><button class="btn small" type="button" id="updCheck">Check for update</button><button class="btn small plant" type="button" id="updGet" ${lsGet("updLatest", 0) > APP_BUILD ? "" : "hidden"}><svg><use href="#i-down"/></svg>Download update</button></div>
       <p class="hint" id="updMsg" style="margin:0">Your finds stay on the phone when you update. After the download, tap the file to install it over this one.</p></div>` : /claude\.ai|claudeusercontent/.test(location.host) ? "" : `<a class="panel" href="android.html" style="text-decoration:none;color:inherit"><h3>Get the Android app</h3><p>Works fully offline and keeps recording hikes with the screen off. Tap for the download and install steps.</p></a>`}
     <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
-    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#labels">Specimen labels</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
     <div class="panel"><h3>iNaturalist</h3>
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>

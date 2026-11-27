@@ -95,7 +95,7 @@ public class TrailPlugin extends Plugin {
     /** Saves a text file (backup, CSV, share file) into Downloads. */
     @PluginMethod
     public void saveText(PluginCall call) {
-        String name = call.getString("filename", "spore-and-leaf.txt").replaceAll("[^A-Za-z0-9._-]", "_");
+        String name = call.getString("filename", "shroom-log.txt").replaceAll("[^A-Za-z0-9._-]", "_");
         String type = call.getString("type", "text/plain");
         String data = call.getString("data", "");
         byte[] bytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -149,7 +149,7 @@ public class TrailPlugin extends Plugin {
         String body = call.getString("body", "");
         android.app.Notification n = new androidx.core.app.NotificationCompat.Builder(c, "alerts")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(call.getString("title", "Spore & Leaf"))
+            .setContentTitle(call.getString("title", "Shroom Log"))
             .setContentText(body)
             .setStyle(new androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
@@ -163,7 +163,7 @@ public class TrailPlugin extends Plugin {
     @PluginMethod
     public void printHTML(PluginCall call) {
         final String html = call.getString("html", "");
-        final String name = call.getString("name", "Spore and Leaf");
+        final String name = call.getString("name", "Shroom Log");
         getActivity().runOnUiThread(() -> {
             try {
                 final android.webkit.WebView wv = new android.webkit.WebView(getActivity());
