@@ -605,6 +605,7 @@ function setChrome({ title, back = false, tab = null, actions = "" }) {
   topActions.innerHTML = (activeTrail ? `<a href="#map" class="badge-todo" style="text-decoration:none;margin-right:6px" aria-label="Recording a trail">● Trail</a>` : "") + actions;
   $$(".tab").forEach(t => t.removeAttribute("aria-current"));
   if (tab) { const t = $(`.tab[data-tab="${tab}"]`); if (t) t.setAttribute("aria-current", "page"); }
+  const mb = $("#moreBtn"); if (mb) { if (tab === "more") mb.setAttribute("aria-current", "page"); else mb.removeAttribute("aria-current"); }
 }
 function cleanupMaps() { maps.forEach(m => { try { m.remove(); } catch (e) {} }); maps = []; }
 async function route() {
