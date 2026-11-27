@@ -159,6 +159,31 @@ public class TrailPlugin extends Plugin {
         catch (Exception e) { call.reject(e.getMessage()); }
     }
 
+    /** Prints a page of HTML (specimen labels) with Android's print dialog, which can also save a PDF. */
+    @PluginMethod
+    public void printHTML(PluginCall call) {
+        final String html = call.getString("html", "");
+        final String name = call.getString("name", "Spore and Leaf");
+        getActivity().runOnUiThread(() -> {
+            try {
+                final android.webkit.WebView wv = new android.webkit.WebView(getActivity());
+                wv.setWebViewClient(new android.webkit.WebViewClient() {
+                    @Override
+                    public void onPageFinished(android.webkit.WebView view, String url) {
+                        android.print.PrintManager pm = (android.print.PrintManager) getActivity().getSystemService(android.content.Context.PRINT_SERVICE);
+                        pm.print(name, view.createPrintDocumentAdapter(name), new android.print.PrintAttributes.Builder().build());
+                        call.resolve();
+                    }
+                });
+                wv.loadDataWithBaseURL("https://localhost/", html, "text/html", "UTF-8", null);
+                printViews.add(wv); // keep it alive until printing is done
+            } catch (Exception e) {
+                call.reject(e.getMessage());
+            }
+        });
+    }
+    private final java.util.List<android.webkit.WebView> printViews = new java.util.ArrayList<>();
+
     @PluginMethod
     public void info(PluginCall call) {
         JSObject res = new JSObject();

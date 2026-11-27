@@ -128,6 +128,16 @@ const COLOURS = [
 const SPORE = [["White","#f4f1ea"],["Cream","#efe0b9"],["Pink","#e3a5a5"],["Yellow-ochre","#c99a3e"],["Rusty brown","#9a5a2c"],["Brown","#6e4a2e"],["Purple-brown","#5a3a4a"],["Black","#1c1c1c"],["Green","#6f9a5a"]];
 const GILLS = ["Gills","Pores (sponge)","Teeth or spines","Ridges (false gills)","Smooth","None (puffball or similar)"];
 const SUBSTRATE = ["Soil","Leaf litter","Moss","Grass","Dead wood","Living tree","Buried wood or roots","Dung","Other"];
+// Habitat log: one tap each, all optional.
+const HAB_LOG = [
+  ["soilType", "Ground", ["Sandy", "Loamy", "Clay", "Peaty", "Rocky", "Mossy", "Leaf mould"]],
+  ["wet", "Ground felt", ["Dry", "Damp", "Wet", "Waterlogged"]],
+  ["slopeObs", "Slope", ["Flat", "Gentle", "Steep"]],
+  ["aspect", "Facing", ["North", "East", "South", "West"]],
+  ["light", "Light", ["Open sun", "Part shade", "Deep shade"]],
+  ["growth", "Growing as", ["Single", "Scattered", "Cluster", "Ring or arc", "Troop"]],
+  ["abundance", "How many", ["1", "2 to 5", "6 to 20", "Lots"]]
+];
 const HABITAT = ["Broadleaf woods","Conifer woods","Mixed woods","Grassland","Heath or moor","Wetland","Hedgerow","Garden or park","Roadside","Coast"];
 const EDIBILITY = [
   ["unknown", "Unknown"],
@@ -609,6 +619,10 @@ async function route() {
   if (h === "review") return renderReview();
   if (h === "inat-past") return renderInatPast();
   if (h === "hikes") return renderHikes();
+  if (h === "anatomy") return renderAnatomy();
+  if (h === "key") return renderKey();
+  if (h === "labels") return renderLabels();
+  if (h.startsWith("label-")) return renderLabels(h.slice(6));
   if (h.startsWith("hike-")) return renderHike(h.slice(5));
   if (h === "trash") return renderTrash();
   if (h === "trips") return renderTrips();
@@ -676,7 +690,7 @@ function matches(f) {
   for (const q of view.quick) { const d = QUICK.find(x => x[0] === q); if (d && !d[2](f)) return false; }
   if (view.trip && f.tripId !== view.trip) return false;
   if (view.q) {
-    const hay = [f.name, f.description, f.notes, f.kitchen && f.kitchen.text, ...((f.kitchen && f.kitchen.ways) || []), f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
+    const hay = [f.name, f.description, f.notes, f.kitchen && f.kitchen.text, ...Object.values(f.hablog || {}), ...((f.kitchen && f.kitchen.ways) || []), f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
     return view.q.toLowerCase().split(/\s+/).every(w => hay.includes(w.replace(/^#/, "")));
   }
   return true;
@@ -866,6 +880,7 @@ function renderGuides() {
     return grp(g, list.length, list.map(t => guideCard(`#tree-${t.id}`, tph[t.id] && (tph[t.id].leaf || tph[t.id].bark || {}).src, t.name, t.latin, firstSentence(t.bark))).join(""), "plant");
   }).join("");
   main.innerHTML = `<div class="wrap view">${guideBanner}
+    <div class="btn-row"><a class="btn plant" href="#key">Mushroom key: step by step</a><a class="btn" href="#anatomy">Mushroom anatomy</a></div>
     <div class="section"><h3>Beginner mushrooms</h3><p class="hint">Often taught first because their key features are distinctive. Every one still has lookalikes.</p>${shroom}</div>
     <div class="section"><h3>Trees</h3><p class="hint">Knowing the trees tells you where to look.</p>${trees}
       <div class="btn-row"><button class="btn small" type="button" id="treeSave"><svg><use href="#i-down"/></svg>Save all tree photos for offline</button></div><p class="hint" id="treeSaveMsg" style="margin:0"></p></div>
@@ -1241,6 +1256,88 @@ async function renderHike(id) {
 }
 
 /* ============================================================
+   Mushroom anatomy and a step-by-step key. Both work offline.
+   ============================================================ */
+function renderAnatomy() {
+  setChrome({ title: "Mushroom anatomy", back: true });
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">The parts to look at and photograph on every find. Learning these makes guides, keys and experts much easier to follow.</p>
+    <div class="panel">${ANATOMY_SVG}</div>
+    <div class="settings-list">${ANATOMY.map(([t, d]) => `<div class="panel" style="gap:4px;padding:12px 14px"><b>${esc(t)}</b><p style="margin:0">${esc(d)}</p></div>`).join("")}</div>
+    <div class="banner warn"><div class="grow"><b>Always dig up the whole mushroom</b> to see the base, and photograph the cap, underside, stem and base. The base is often what tells a deadly one apart.</div></div>
+    <div class="btn-row"><a class="btn plant" href="#key">Try the mushroom key</a><a class="btn" href="#guides">Beginner guides</a></div>
+  </div>`;
+}
+let keyPath = ["start"];
+function renderKey() {
+  setChrome({ title: "Mushroom key", back: true });
+  const id = keyPath[keyPath.length - 1], n = KEY[id] || KEY.start;
+  const crumbs = keyPath.slice(0, -1).map((k, i) => { const next = keyPath[i + 1]; const o = KEY[k].opts.find(x => x[1] === next); return o ? o[0] : ""; }).filter(Boolean);
+  const sevTxt = { deadly: "Deadly group", toxic: "Toxic", expert: "Expert only", guide: "Beginner guide" };
+  const sevCls = { deadly: "deadly", toxic: "toxic", expert: "unknown", guide: "edible" };
+  main.innerHTML = `<div class="wrap view">
+    <div class="banner danger"><svg><use href="#i-warn"/></svg><div class="grow"><b>A key narrows things down. It never tells you something is safe to eat.</b> Have every find checked in person by an expert.</div></div>
+    ${crumbs.length ? `<ol class="hint" style="margin:0;padding-left:20px;display:grid;gap:2px">${crumbs.map(c => `<li>${esc(c)}</li>`).join("")}</ol>` : `<p class="hint" style="margin:0">Answer each question with the mushroom in front of you. Not sure what a word means? <a href="#anatomy" style="color:var(--plant)">See the anatomy guide</a>.</p>`}
+    ${n.leaf ? `<div class="panel" style="gap:10px"><span class="edib ${sevCls[n.sev]}" style="align-self:flex-start">${sevTxt[n.sev]}</span><h2 style="margin:0">${esc(n.title)}</h2><p style="margin:0">${esc(n.text)}</p>
+        ${(n.guides || []).filter(g => GUIDES[g]).map(g => { const e = EDIBLES.find(x => x.id === g); return `<a class="btn small plant" href="#guide-${g}" style="align-self:flex-start">Check every step in the ${esc(e ? e.name : g)} guide ›</a>`; }).join("")}</div>`
+      : `<div class="panel" style="gap:10px"><h2 style="margin:0;font-size:21px">${esc(n.q)}</h2><div class="settings-list" style="gap:8px">${n.opts.map(([l, to]) => `<button class="btn keyopt" type="button" data-to="${esc(to)}">${esc(l)}</button>`).join("")}</div></div>`}
+    <div class="btn-row">${keyPath.length > 1 ? `<button class="btn ghost" type="button" id="keyBack">‹ Back a step</button><button class="btn ghost" type="button" id="keyRestart">Start again</button>` : ""}<a class="btn ghost" href="#anatomy">Anatomy</a></div>
+  </div>`;
+  $$(".keyopt").forEach(b => b.addEventListener("click", () => { keyPath.push(b.dataset.to); renderKey(); window.scrollTo(0, 0); }));
+  const kb = $("#keyBack"); if (kb) kb.addEventListener("click", () => { keyPath.pop(); renderKey(); });
+  const kr = $("#keyRestart"); if (kr) kr.addEventListener("click", () => { keyPath = ["start"]; renderKey(); });
+}
+
+/* ============================================================
+   Specimen labels with a QR code, to print and keep with a sample.
+   ============================================================ */
+function labelQR(text) {
+  try { qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"]; const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); } catch (e) { return ""; }
+}
+function labelText(f) {
+  return [`Spore & Leaf ${f.id}`, f.name || "Not yet identified", fmtDate(f.foundAt) + " " + fmtTime(f.foundAt), f.lat != null ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}` : "", f.substrate ? "On: " + f.substrate : "", (f.habitat || []).join(", "), f.trees ? "Near: " + f.trees : "", f.spore ? "Spore print: " + f.spore : "", lsGet("collector", "") ? "Collector: " + lsGet("collector", "") : ""].filter(Boolean).join("\n");
+}
+function labelHTML(f) {
+  const where = f.lat != null ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}` : "No location";
+  return `<div class="slabel"><div class="slq">${labelQR(labelText(f))}</div><div class="slt"><b>${esc(f.name || "Not yet identified")}</b>
+    <span>${esc(fmtDate(f.foundAt))} · ${esc(fmtTime(f.foundAt))}</span><span>${esc(where)}${f.elev != null ? ` · ${esc(fmtElev(f.elev))}` : ""}</span>
+    ${f.substrate || (f.habitat || []).length ? `<span>${esc([f.substrate, ...(f.habitat || [])].filter(Boolean).join(" · "))}</span>` : ""}
+    ${f.trees ? `<span>Near ${esc(f.trees)}</span>` : ""}${f.spore ? `<span>Spore print: ${esc(f.spore)}</span>` : ""}
+    <span class="slid">${esc(lsGet("collector", "") ? lsGet("collector", "") + " · " : "")}#${esc(f.id.slice(-6).toUpperCase())}</span></div></div>`;
+}
+const LABEL_CSS = `.slabels{display:grid;grid-template-columns:repeat(2,1fr);gap:4mm}.slabel{display:flex;gap:3mm;border:1px solid #333;border-radius:2mm;padding:3mm;break-inside:avoid;color:#000;background:#fff;font:9pt/1.3 system-ui,sans-serif}.slq{width:22mm;flex:none}.slq svg{width:22mm;height:22mm;display:block}.slt{display:flex;flex-direction:column;min-width:0}.slt b{font-size:11pt}.slid{color:#555;margin-top:auto}@page{margin:10mm}`;
+let labelPick = null;
+function renderLabels(one) {
+  setChrome({ title: "Specimen labels", back: true });
+  const list = finds.filter(f => !f.sample).sort((a, b) => (b.foundAt || "").localeCompare(a.foundAt || ""));
+  if (one) labelPick = new Set([one]);
+  if (!labelPick) { const d = list[0] && list[0].foundAt.slice(0, 10); labelPick = new Set(list.filter(f => f.foundAt.slice(0, 10) === d).map(f => f.id)); }
+  const chosen = list.filter(f => labelPick.has(f.id));
+  main.innerHTML = `<div class="wrap view">
+    <p class="hint">Print and keep a label with each dried sample or spore print. The QR code holds the find's details, so a phone can read it with no signal.</p>
+    <div class="field"><label for="collector">Collector name on labels</label><input type="text" id="collector" value="${esc(lsGet("collector", ""))}" placeholder="Optional"></div>
+    <details class="edmore"><summary>Pick finds (${chosen.length} chosen)</summary><div class="settings-list" style="gap:6px;margin-top:8px">
+      <div class="btn-row"><button class="btn small ghost" type="button" id="lbNone">Clear</button></div>
+      ${list.map(f => `<label class="switch" style="padding:6px 0"><span><b>${esc(f.name || "Not yet identified")}</b> <span class="hint">${esc(fmtDate(f.foundAt))}</span></span><input type="checkbox" data-lb="${esc(f.id)}" ${labelPick.has(f.id) ? "checked" : ""}></label>`).join("")}
+    </div></details>
+    <div class="btn-row"><button class="btn primary" type="button" id="lbPrint" ${chosen.length ? "" : "disabled"}>Print ${chosen.length} ${chosen.length === 1 ? "label" : "labels"}</button><button class="btn" type="button" id="lbSave" ${chosen.length ? "" : "disabled"}><svg><use href="#i-down"/></svg>Save as a file</button></div>
+    <style>${LABEL_CSS}</style>
+    <div class="slabels" id="lbPreview">${chosen.map(labelHTML).join("")}</div>
+  </div>`;
+  $("#collector").addEventListener("change", e => { lsSet("collector", e.target.value.trim()); renderLabels(); });
+  $$("[data-lb]").forEach(c => c.addEventListener("change", () => { c.checked ? labelPick.add(c.dataset.lb) : labelPick.delete(c.dataset.lb); const op = $(".edmore").open; renderLabels(); $(".edmore").open = op; }));
+  $("#lbNone").addEventListener("click", () => { labelPick.clear(); renderLabels(); $(".edmore").open = true; });
+  const doc = () => `<!doctype html><html><head><meta charset="utf-8"><title>Specimen labels</title><style>body{margin:0;background:#fff}${LABEL_CSS}</style></head><body><div class="slabels">${chosen.map(labelHTML).join("")}</div></body></html>`;
+  $("#lbPrint").addEventListener("click", async () => {
+    if (NATIVE) { try { await nat("printHTML", { html: doc(), name: "Specimen labels" }); } catch (e) { toast("Printing isn't available. Save as a file instead."); } return; }
+    const wdw = window.open("", "_blank");
+    if (!wdw) { toast("Allow pop-ups to print, or save as a file."); return; }
+    wdw.document.write(doc()); wdw.document.close(); wdw.focus(); setTimeout(() => wdw.print(), 300);
+  });
+  $("#lbSave").addEventListener("click", () => saveFile(`specimen-labels-${stamp()}.html`, doc(), "text/html"));
+}
+
+/* ============================================================
    Trash: deleted finds wait 30 days before they're gone.
    ============================================================ */
 function renderTrash() {
@@ -1445,6 +1542,7 @@ async function renderDetail(id) {
   if (isShroom && f.bruise) idBits.push(`<div class="fact"><span class="eyebrow">Bruising</span><span class="v">${esc(f.bruise)}${f.bruiseNote ? `<small><br>${esc(f.bruiseNote)}</small>` : ""}</span></div>`);
   if (f.elev != null || f.slope != null) idBits.push(`<div class="fact"><span class="eyebrow">Terrain</span><span class="v">${esc(terrainText(f))}</span></div>`);
   if (f.trees) idBits.push(`<div class="fact"><span class="eyebrow">Nearby trees</span><span class="v">${esc(f.trees)}</span></div>`);
+  HAB_LOG.forEach(([k, l]) => { if (f.hablog && f.hablog[k]) idBits.push(`<div class="fact"><span class="eyebrow">${esc(l)}</span><span class="v">${esc(f.hablog[k])}</span></div>`); });
 
   main.innerHTML = `<div class="wrap view${dirNow > 0 ? " slide-l" : dirNow < 0 ? " slide-r" : ""}" id="detailView">
     ${nb.n > 1 ? `<div class="findnav"><button class="btn ghost small" type="button" id="fPrev" ${nb.prev ? "" : "disabled"}>‹ Previous</button><span class="hint num">${nb.i + 1} of ${nb.n} · swipe to move</span><button class="btn ghost small" type="button" id="fNext" ${nb.next ? "" : "disabled"}>Next ›</button></div>` : ""}
@@ -1502,7 +1600,7 @@ async function renderDetail(id) {
     ${f.photos.length ? `<div class="btn-row"><button class="btn" type="button" id="cmpBtn"><svg><use href="#i-img"/></svg>Compare with a reference photo</button></div>` : ""}
     <div class="btn-row">${f.lat != null ? '<button class="btn plant" type="button" id="compassBtn"><svg><use href="#i-gps"/></svg>Guide me here</button>' : ""}<button class="btn" type="button" id="shareOne"><svg><use href="#i-share"/></svg>Share with a buddy</button></div>
     ${f.blurred ? `<p class="hint">${esc(f.sharedFrom || "Your buddy")} hid the exact spot, so the location is only accurate to about 1 km.</p>` : ""}
-    <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Move to trash</button></div>
+    <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><a class="btn" href="#label-${esc(f.id)}">Label</a><button class="btn danger" type="button" id="delBtn">Move to trash</button></div>
   </div>`;
   if (nb.n > 1) {
     $("#fPrev").addEventListener("click", () => goFind(nb.prev, -1));
@@ -1679,6 +1777,8 @@ async function renderForm(id) {
       ${chipGroup("subChips", SUBSTRATE, f.substrate ? [f.substrate] : [])}
       <div class="lbl">Habitat</div>
       ${chipGroup("habChips", HABITAT, f.habitat)}
+      <div class="lbl" style="margin-top:6px">Habitat log</div><span class="hint">Tap what fits. Over time it shows what each species likes.</span>
+      ${HAB_LOG.map(([k, l, opts]) => `<div class="hablog"><span>${l}</span>${chipGroup("hab_" + k, opts, f.hablog && f.hablog[k] ? [f.hablog[k]] : [])}</div>`).join("")}
       <div class="field"><label for="trees">Nearby trees or plants</label><input type="text" id="trees" placeholder="e.g. birch, beech, under bracken" value="${esc(f.trees)}"></div>
     </fieldset>
 
@@ -1743,6 +1843,7 @@ async function renderForm(id) {
   applyType();
   multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips"); multiSelect(form, "cookChips");
   singleSelect(form, "sporeChips"); singleSelect(form, "gillChips"); singleSelect(form, "subChips");
+  HAB_LOG.forEach(([k]) => singleSelect(form, "hab_" + k));
   multiSelect(form, "smellChips"); multiSelect(form, "texChips"); singleSelect(form, "bruiseChips");
 
   // Lookalikes: suggested from the name and Shroom ID result, plus your own.
@@ -2011,6 +2112,7 @@ async function renderForm(id) {
     f.gills = f.type === "mushroom" ? (picked(form, "gillChips")[0] || "") : "";
     f.substrate = picked(form, "subChips")[0] || "";
     f.habitat = picked(form, "habChips");
+    { const hl = {}; HAB_LOG.forEach(([k]) => { const v = picked(form, "hab_" + k)[0]; if (v) hl[k] = v; }); f.hablog = Object.keys(hl).length ? hl : undefined; }
     f.trees = $("#trees").value.trim();
     f.edibility = $("#edib").value;
     f.revisit = $("#revisit").checked;
@@ -3685,7 +3787,7 @@ async function renderSettings() {
       <div class="btn-row"><button class="btn small" type="button" id="updCheck">Check for update</button><button class="btn small plant" type="button" id="updGet" ${lsGet("updLatest", 0) > APP_BUILD ? "" : "hidden"}><svg><use href="#i-down"/></svg>Download update</button></div>
       <p class="hint" id="updMsg" style="margin:0">Your finds stay on the phone when you update. After the download, tap the file to install it over this one.</p></div>` : /claude\.ai|claudeusercontent/.test(location.host) ? "" : `<a class="panel" href="android.html" style="text-decoration:none;color:inherit"><h3>Get the Android app</h3><p>Works fully offline and keeps recording hikes with the screen off. Tap for the download and install steps.</p></a>`}
     <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
-    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#labels">Specimen labels</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
     <div class="panel"><h3>iNaturalist</h3>
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
