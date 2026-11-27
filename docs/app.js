@@ -608,6 +608,8 @@ async function route() {
   if (h === "species") return renderSpeciesList();
   if (h === "review") return renderReview();
   if (h === "inat-past") return renderInatPast();
+  if (h === "hikes") return renderHikes();
+  if (h.startsWith("hike-")) return renderHike(h.slice(5));
   if (h === "trash") return renderTrash();
   if (h === "trips") return renderTrips();
   if (h.startsWith("trip-")) return renderTrip(h.slice(5));
@@ -802,17 +804,25 @@ function renderResults() {
       : `<div class="empty"><svg width="56" height="56" style="color:var(--faint)"><use href="#i-shroom"/></svg><h2>Your log is empty</h2><p>Tap the + button, or Quick log, to save your first mushroom or plant.</p><a class="btn primary" href="#new"><svg><use href="#i-plus"/></svg>Log a find</a></div>`;
     return;
   }
+  navIds = list.map(f => f.id); lsSet("navIds", navIds);
   const groupCounts = {};
   list.forEach(f => { const k = groupKey(f); if (k) groupCounts[k] = (groupCounts[k] || 0) + 1; });
+  // Months fold up. The newest one starts open; your choices are remembered, and a search opens them all.
+  const keys = Object.keys(groupCounts), openSet = new Set(lsGet("logOpen:" + view.sort, keys.slice(0, 1)));
+  const allOpen = !!(view.q || "").trim();
   let cur = null, html = "", items = [];
-  const flush = () => { if (items.length) { html += `<div class="list">${items.join("")}</div>`; items = []; } };
+  const flush = () => { if (items.length) { html += cur ? `<div class="list">${items.join("")}</div></details>` : `<div class="list">${items.join("")}</div>`; items = []; } };
   for (const f of list) {
     const k = groupKey(f);
-    if (k && k !== cur) { flush(); cur = k; html += `<div class="group-h"><h2>${esc(k)}</h2><span class="num">${groupCounts[k]} ${groupCounts[k] === 1 ? "find" : "finds"}</span></div>`; }
+    if (k && k !== cur) { flush(); cur = k; html += `<details class="mgroup" data-k="${esc(k)}" ${allOpen || openSet.has(k) ? "open" : ""}><summary class="group-h"><h2>${esc(k)}</h2><span class="num">${groupCounts[k]} ${groupCounts[k] === 1 ? "find" : "finds"}</span><svg class="gchev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></summary>`; }
     items.push(cardHTML(f));
   }
   flush();
-  res.innerHTML = html;
+  res.innerHTML = (keys.length > 1 ? `<div class="btn-row" style="justify-content:flex-end;margin-bottom:-4px"><button class="btn ghost small" type="button" id="mAll">Open all</button><button class="btn ghost small" type="button" id="mNone">Close all</button></div>` : "") + html;
+  const saveOpen = () => { if (!allOpen) lsSet("logOpen:" + view.sort, $$(".mgroup", res).filter(d => d.open).map(d => d.dataset.k)); };
+  $$(".mgroup", res).forEach(d => d.addEventListener("toggle", () => { saveOpen(); if (d.open) hydrateThumbs(d); }));
+  const ma = $("#mAll"); if (ma) ma.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = true; }); saveOpen(); });
+  const mn = $("#mNone"); if (mn) mn.addEventListener("click", () => { $$(".mgroup", res).forEach(d => { d.open = false; }); saveOpen(); });
   hydrateThumbs(res);
 }
 
@@ -1174,6 +1184,62 @@ async function renderInatPast() {
 }
 
 /* ============================================================
+   Saved hikes: a list, and a page for each with its route and full stats.
+   ============================================================ */
+const hikeDate = t => fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+const hikeFinds = t => finds.filter(f => { const x = new Date(f.foundAt).getTime(); return f.trailId === t.id || (x >= t.start - 60000 && x <= (t.end || t.start) + 60000); });
+async function renderHikes() {
+  setChrome({ title: "Hikes", back: true });
+  const all = ((await store.all("trails").catch(() => [])) || []).sort((a, b) => b.start - a.start);
+  const km = all.reduce((a, t) => a + (t.km || 0), 0), up = all.reduce((a, t) => a + (t.up || 0), 0);
+  main.innerHTML = `<div class="wrap view">
+    ${all.length ? `<div class="facts" style="grid-template-columns:repeat(3,1fr)"><div class="fact"><span class="eyebrow">Hikes</span><span class="v num">${all.length}</span></div><div class="fact"><span class="eyebrow">Distance</span><span class="v num">${esc(fmtDist(km))}</span></div><div class="fact"><span class="eyebrow">Climb</span><span class="v num">${esc(fmtElev(up))}</span></div></div>
+      <div class="list" style="grid-template-columns:1fr">${all.map(t => `<a class="panel" href="#hike-${esc(t.id)}" style="text-decoration:none;color:inherit;padding:12px 14px;gap:2px"><b>${esc(t.name || hikeDate(t))}</b><span class="hint num">${t.name ? esc(hikeDate(t)) + " · " : ""}${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}${t.up != null ? ` · ${esc(fmtElev(t.up))} climb` : ""}${hikeFinds(t).length ? ` · ${hikeFinds(t).length} ${hikeFinds(t).length === 1 ? "find" : "finds"}` : ""}</span></a>`).join("")}</div>`
+      : `<div class="empty"><h2>No hikes yet</h2><p>Start recording from the Map tab. When you stop, the hike is saved here with its route and stats.</p><a class="btn primary" href="#map">Go to the map</a></div>`}
+  </div>`;
+}
+async function renderHike(id) {
+  const t = await store.get("trails", id).catch(() => null);
+  if (!t) { location.hash = "hikes"; return; }
+  setChrome({ title: "Hike", back: true });
+  const fs = hikeFinds(t);
+  main.innerHTML = `<div class="wrap view">
+    <div class="detail-head"><h2>${esc(t.name || hikeDate(t))}</h2><div class="meta num">${t.name ? `<span>${esc(hikeDate(t))}</span>` : ""}<span class="${t.name ? "sep" : ""}">${esc(fmtTime(new Date(t.start).toISOString()))} to ${esc(fmtTime(new Date(t.end || t.start).toISOString()))}</span></div></div>
+    <div class="mini-map" id="hikeMap" style="height:300px"></div>
+    ${trailStatsHTML(t)}
+    ${fs.length ? `<div class="section"><h3>Found on this hike</h3><div class="list">${fs.map(cardHTML).join("")}</div></div>` : ""}
+    <div class="field"><label for="hikeName">Name</label><input type="text" id="hikeName" value="${esc(t.name || "")}" placeholder="For example, Algonquin, Track and Tower"></div>
+    <div class="btn-row"><button class="btn small" type="button" id="hikeGpx"><svg><use href="#i-down"/></svg>Save as GPX</button><button class="btn small danger" type="button" id="hikeDel">Delete hike</button></div>
+    <p class="hint" style="margin:0">GPX files open in Strava, Gaia GPS, AllTrails and most map apps.</p>
+  </div>`;
+  hydrateThumbs(main);
+  const el = $("#hikeMap"), ll = (t.points || []).map(p => [p[0], p[1]]);
+  if (hasLeaflet && ll.length) {
+    const m = makeMap(el, ll[0], 14, { dragging: !L.Browser.mobile, scrollWheelZoom: false });
+    if (m) {
+      const css = getComputedStyle(document.documentElement);
+      L.polyline(ll, { color: css.getPropertyValue("--plant").trim(), weight: 4 }).addTo(m);
+      L.circleMarker(ll[0], { radius: 7, color: "#fff", weight: 2, fillColor: css.getPropertyValue("--plant").trim(), fillOpacity: 1 }).addTo(m).bindTooltip("Start");
+      L.circleMarker(ll[ll.length - 1], { radius: 7, color: "#fff", weight: 2, fillColor: css.getPropertyValue("--shroom").trim(), fillOpacity: 1 }).addTo(m).bindTooltip("End");
+      fs.filter(f => f.lat != null).forEach(f => L.marker([f.lat, f.lng], { icon: pinIcon(f.type) }).addTo(m).bindPopup(`<a href="#find-${esc(f.id)}">${esc(f.name || "Not yet identified")}</a>`));
+      if (ll.length > 1) m.fitBounds(ll, { padding: [24, 24], maxZoom: 16 });
+    }
+  } else el.remove();
+  $("#hikeName").addEventListener("change", async e => { t.name = e.target.value.trim() || undefined; await store.put("trails", t); toast("Name saved"); });
+  $("#hikeGpx").addEventListener("click", async () => {
+    const pts = (t.points || []).map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[3] != null ? `<ele>${p[3]}</ele>` : ""}<time>${new Date(p[2]).toISOString()}</time></trkpt>`).join("\n");
+    const name = (t.name || "Hike " + new Date(t.start).toISOString().slice(0, 10)).replace(/[<&>]/g, "");
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Spore and Leaf" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>\n${pts}\n</trkseg></trk></gpx>\n`;
+    await saveFile(`hike-${new Date(t.start).toISOString().slice(0, 10)}.gpx`, gpx, "application/gpx+xml");
+  });
+  $("#hikeDel").addEventListener("click", async () => {
+    const b = $("#hikeDel");
+    if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to delete"; return; }
+    await store.del("trails", id); toast("Hike deleted"); location.hash = "hikes";
+  });
+}
+
+/* ============================================================
    Trash: deleted finds wait 30 days before they're gone.
    ============================================================ */
 function renderTrash() {
@@ -1338,9 +1404,30 @@ async function renderSpecies(key) {
     }
   }
 }
+// The order you last saw on the Finds list, so next and previous follow it.
+let navIds = lsGet("navIds", []);
+function navNeighbors(id) {
+  let ids = navIds.filter(x => finds.some(f => f.id === x));
+  if (!ids.includes(id)) ids = finds.slice().sort((a, b) => (b.foundAt || "").localeCompare(a.foundAt || "")).map(f => f.id);
+  const i = ids.indexOf(id);
+  return { i, n: ids.length, prev: i > 0 ? ids[i - 1] : null, next: i >= 0 && i < ids.length - 1 ? ids[i + 1] : null };
+}
+// A sideways swipe goes to the next or previous find. Maps, photo strips and inputs keep their own swipes.
+function wireSwipe(el, onLeft, onRight) {
+  let sx = 0, sy = 0, st = 0, ok = false;
+  el.addEventListener("touchstart", e => { const t = e.touches[0]; ok = e.touches.length === 1 && !e.target.closest(".leaflet-container,.strip,input,textarea,select,canvas"); sx = t.clientX; sy = t.clientY; st = Date.now(); }, { passive: true });
+  el.addEventListener("touchend", e => {
+    if (!ok) return; ok = false;
+    const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2 && Date.now() - st < 700) (dx < 0 ? onLeft : onRight)();
+  }, { passive: true });
+}
+let swipeDir = 0;
+function goFind(id, dir) { if (!id) return; swipeDir = dir; location.hash = "find-" + id; }
 async function renderDetail(id) {
   const f = finds.find(x => x.id === id);
   if (!f) { location.hash = "log"; return; }
+  const nb = navNeighbors(id), dirNow = swipeDir; swipeDir = 0;
   setChrome({ title: f.type === "plant" ? "Plant" : "Mushroom", back: true, actions: `<a class="icon-btn" href="#edit-${esc(f.id)}" aria-label="Edit"><svg><use href="#i-edit"/></svg></a>` });
   const dist = lastLoc && f.lat != null ? fmtDist(haversine(lastLoc, f)) : null;
   const src = { gps: "From GPS", photo: "From the photo", pin: "Pinned on map" }[f.locSource] || "";
@@ -1358,7 +1445,8 @@ async function renderDetail(id) {
   if (f.elev != null || f.slope != null) idBits.push(`<div class="fact"><span class="eyebrow">Terrain</span><span class="v">${esc(terrainText(f))}</span></div>`);
   if (f.trees) idBits.push(`<div class="fact"><span class="eyebrow">Nearby trees</span><span class="v">${esc(f.trees)}</span></div>`);
 
-  main.innerHTML = `<div class="wrap view">
+  main.innerHTML = `<div class="wrap view${dirNow > 0 ? " slide-l" : dirNow < 0 ? " slide-r" : ""}" id="detailView">
+    ${nb.n > 1 ? `<div class="findnav"><button class="btn ghost small" type="button" id="fPrev" ${nb.prev ? "" : "disabled"}>‹ Previous</button><span class="hint num">${nb.i + 1} of ${nb.n} · swipe to move</span><button class="btn ghost small" type="button" id="fNext" ${nb.next ? "" : "disabled"}>Next ›</button></div>` : ""}
     ${f.needsDetails ? `<div class="banner warn"><svg><use href="#i-bolt"/></svg><div class="grow">Saved with Quick log. <a href="#edit-${esc(f.id)}" style="color:inherit;font-weight:700">Add the details</a> while you remember them.</div></div>` : ""}
     ${f.photos.length ? `<img class="hero-photo" id="heroImg" alt="Photo of ${esc(f.name || "this find")}">` : ""}
     ${f.photos.length > 1 ? `<div class="strip" id="strip">${f.photos.map((p, i) => `<button type="button" data-i="${i}" aria-pressed="${i === 0}" aria-label="Show ${esc(p.label || "photo " + (i + 1))}"><img data-photo="${esc(p.key)}" alt=""><small>${esc(p.label || "Photo")}</small></button>`).join("")}</div>` : ""}
@@ -1413,6 +1501,11 @@ async function renderDetail(id) {
     ${f.blurred ? `<p class="hint">${esc(f.sharedFrom || "Your buddy")} hid the exact spot, so the location is only accurate to about 1 km.</p>` : ""}
     <div class="btn-row" id="delRow"><a class="btn" href="#edit-${esc(f.id)}"><svg><use href="#i-edit"/></svg>Edit</a><button class="btn danger" type="button" id="delBtn">Move to trash</button></div>
   </div>`;
+  if (nb.n > 1) {
+    $("#fPrev").addEventListener("click", () => goFind(nb.prev, -1));
+    $("#fNext").addEventListener("click", () => goFind(nb.next, 1));
+    wireSwipe($("#detailView"), () => goFind(nb.next, 1), () => goFind(nb.prev, -1));
+  }
   if (f.photos.length) {
     const hero = $("#heroImg");
     const show = async i => { const u = await photoURL(f.photos[i].key); if (u) hero.src = u; };
@@ -1617,7 +1710,7 @@ async function renderForm(id) {
       <div class="field"><label for="wxNote">Weather notes</label><input type="text" id="wxNote" placeholder="e.g. first frost two nights ago" value="${esc(f.weatherNote)}"></div>
     </fieldset>
 
-    <div class="savebar"><a class="btn ghost" href="${existing ? "#find-" + esc(f.id) : "#log"}">Cancel</a><button class="btn primary" type="submit" id="saveBtn">Save find</button></div>
+    <div class="savebar"><a class="btn ghost" href="${existing ? "#find-" + esc(f.id) : "#log"}">Cancel</a>${existing && navNeighbors(f.id).next ? `<button class="btn" type="submit" id="saveNext" data-next="${esc(navNeighbors(f.id).next)}">Save, next ›</button>` : ""}<button class="btn primary" type="submit" id="saveBtn">Save find</button></div>
   </form></div>`;
 
   const form = $("#findForm");
@@ -1719,7 +1812,8 @@ async function renderForm(id) {
     const rm = e.target.closest("[data-rm]"), cv = e.target.closest("[data-cv]"), ms = e.target.closest("[data-ms]");
     if (ms) {
       const img = $(`img[data-i="${ms.dataset.ms}"]`, $("#photoGrid"));
-      if (img && img.src) openScaleSheet(img.src, (field, cm) => { $("#" + field).value = toDisp(cm); });
+      // Fills the size box right away; returns what was there so a wrong guess can be undone.
+      if (img && img.src) openScaleSheet(img.src, (field, cm, raw) => { const el = $("#" + field); if (!el) return ""; const old = el.value; el.value = raw != null ? raw : toDisp(cm); el.dispatchEvent(new Event("input", { bubbles: true })); return old; }, photos[+ms.dataset.ms] && photos[+ms.dataset.ms].label);
       return;
     }
     if (rm) { const [p] = photos.splice(+rm.dataset.rm, 1); if (p.key) removedKeys.push(p.key); drawPhotos(); }
@@ -1928,7 +2022,8 @@ async function renderForm(id) {
       await loadFinds();
       toast(existing ? "Changes saved" : "Find saved");
       if (f.inatQueued) setTimeout(inatProcess, 500);
-      location.hash = "find-" + f.id;
+      if (e.submitter && e.submitter.id === "saveNext") { swipeDir = 1; location.hash = "edit-" + e.submitter.dataset.next; }
+      else location.hash = "find-" + f.id;
     } catch (err) {
       $("#saveBtn").disabled = false;
       toast("Couldn't save. Your phone may be out of storage.");
@@ -2754,7 +2849,7 @@ async function renderMap() {
       tp.innerHTML = `<h3>Hikes</h3><p>Record your route with distance, climb, moving time, pace and an elevation profile. Finds you log while recording are linked to it.</p>
         <div class="field"><label for="trailRate">Check GPS</label><select id="trailRate">${TRAIL_RATES.map(([v, l]) => `<option value="${v}" ${trailRate() === v ? "selected" : ""}>${l}</option>`).join("")}</select><span class="hint"><span id="rateHint">${esc(trailBatteryText(trailRate()))}</span> GPS is off between checks. Longer gaps cut corners on winding trails, so distance and climb read a little low.</span></div>
         <div class="btn-row"><button class="btn plant" type="button" id="trailStart"${geoAvailable() ? "" : " disabled"}><svg><use href="#i-gps"/></svg>Start recording</button></div>
-        ${saved.length ? `<div class="settings-list">${saved.slice(0, 10).map(t => `<div class="switch" style="font-size:15px"><span class="num"><b>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}</b><br><span class="hint">${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}${t.up != null ? ` · ${esc(fmtElev(t.up))} climb` : ""}</span>${(t.points || []).some(p => p[3] != null) ? `<details><summary class="hint" style="cursor:pointer">Stats and profile</summary>${trailStatsHTML(t)}</details>` : ""}</span><span style="display:flex;gap:6px;align-items:center"><button type="button" class="btn small ghost" data-del="${esc(t.id)}">${armDelete === t.id ? "Tap to delete" : "Delete"}</button><input type="checkbox" data-show="${esc(t.id)}" ${hiddenTrails.has(t.id) ? "" : "checked"} aria-label="Show on map"></span></div>`).join("")}</div>` : ""}`;
+        ${saved.length ? `<a href="#hikes" class="btn small ghost" style="align-self:flex-start">All ${saved.length} saved ${saved.length === 1 ? "hike" : "hikes"} ›</a>` : ""}${saved.length ? `<div class="settings-list">${saved.slice(0, 10).map(t => `<div class="switch" style="font-size:15px"><span class="num"><b>${esc(fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}</b><br><span class="hint">${esc(fmtDist(t.km || 0))} · ${esc(fmtDur((t.end || t.start) - t.start))}${t.up != null ? ` · ${esc(fmtElev(t.up))} climb` : ""}</span><br><a href="#hike-${esc(t.id)}" style="color:var(--plant);font-weight:700;text-decoration:none">Route and full stats ›</a></span><span style="display:flex;gap:6px;align-items:center"><button type="button" class="btn small ghost" data-del="${esc(t.id)}">${armDelete === t.id ? "Tap to delete" : "Delete"}</button><input type="checkbox" data-show="${esc(t.id)}" ${hiddenTrails.has(t.id) ? "" : "checked"} aria-label="Show on map"></span></div>`).join("")}</div>` : ""}`;
       const tr = $("#trailRate"); if (tr) tr.addEventListener("change", () => { lsSet("trailRate", +tr.value); $("#rateHint").textContent = trailBatteryText(+tr.value); });
       const st = $("#trailStart");
       if (st) st.addEventListener("click", () => { startTrail(); toast("Recording your trail"); setChrome({ title: "Map", tab: "map" }); drawTrailPanel(); drawTrails(); });
@@ -3205,7 +3300,16 @@ function drawCalendar(kind) {
 /* ============================================================
    Photo scale helper: measure against a coin or card in the shot.
    ============================================================ */
-function openScaleSheet(src, onUse) {
+const SIZE_FIELDS = [["width", "Width"], ["height", "Height"], ["length", "Length"], ["stem", "Stem height"]];
+// Guesses which size a line is from its direction and what the photo shows.
+function guessSizeField(p, q, label) {
+  const dx = Math.abs(p[0] - q[0]), dy = Math.abs(p[1] - q[1]);
+  const stemPhoto = /stem/i.test(label || ""), topView = /^(cap|leaf|flower|spore)/i.test(label || "");
+  if (dx >= dy * 1.6) return "width";
+  if (dy >= dx * 1.6) return stemPhoto ? "stem" : topView ? "length" : "height";
+  return null; // diagonal: ask
+}
+function openScaleSheet(src, onUse, photoLabel) {
   const bg = document.createElement("div");
   bg.className = "sheet-bg";
   const refId = SCALE_REFS.some(r => r[0] === lsGet("scaleRef", "tape")) ? lsGet("scaleRef", "tape") : "tape";
@@ -3228,9 +3332,7 @@ function openScaleSheet(src, onUse) {
     </div>
     <p class="hint" style="margin:0">Pinch or use + to zoom, drag with one finger to move around. Tap to place a point, then drag a point to fine-tune it; a magnifier shows exactly where it sits.</p>
     <div class="banner warn" id="scResult" hidden></div>
-    <div class="btn-row" id="scUse" hidden>
-      <button class="btn small" type="button" data-use="width">Use as width</button><button class="btn small" type="button" data-use="height">Height</button><button class="btn small" type="button" data-use="length">Length</button><button class="btn small" type="button" data-use="stem">Stem height</button>
-    </div>
+    <div class="panel" id="scUse" hidden style="gap:8px;background:var(--surface-2);padding:12px 14px"></div>
     <div class="btn-row"><button class="btn ghost" type="button" id="scRedo">Start again</button><button class="btn primary" type="button" id="scDone" style="flex:1">Done</button></div>
     <p class="hint" style="margin:0">Works best with the tape, coin or card lying right next to the find, photographed from straight above or straight on.</p>
   </div>`;
@@ -3246,7 +3348,7 @@ function openScaleSheet(src, onUse) {
       ? (pts.length ? "Now tap the second mark on the tape." : "Tap a mark on the tape, for example 0 or 10 cm.")
       : (pts.length ? "Now tap the other edge of the coin or card." : "Tap one edge of the coin, or one end of the card edge you picked, straight across.");
     else if (pts.length < 4) s.textContent = pts.length === 2 ? "Now tap one end of what you want to measure." : "Tap the other end.";
-    else s.textContent = "Tap again to measure something else.";
+    else s.textContent = "Tap again to measure something else. Each one fills in its own size.";
   };
   function draw() {
     if (!img.naturalWidth) return;
@@ -3302,7 +3404,7 @@ function openScaleSheet(src, onUse) {
     step();
   }
   function compute() {
-    if (pts.length < 4) { $("#scResult", bg).hidden = true; $("#scUse", bg).hidden = true; return; }
+    if (pts.length < 4) { $("#scResult", bg).hidden = true; $("#scUse", bg).hidden = true; cur = null; return; }
     const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
     const ref = SCALE_REFS.find(r => r[0] === $("#scRef", bg).value) || SCALE_REFS[0];
     const refPx = d(pts[0], pts[1]);
@@ -3315,7 +3417,23 @@ function openScaleSheet(src, onUse) {
     lastCm = d(pts[2], pts[3]) / pxPerMm / 10;
     const shown = settings.units === "in" ? `${(lastCm / 2.54).toFixed(2)} in` : `${lastCm.toFixed(1)} cm`;
     $("#scResult", bg).hidden = false; $("#scResult", bg).innerHTML = `<div class="grow">About <b class="num">${esc(shown)}</b>. Treat this as an estimate.</div>`;
-    $("#scUse", bg).hidden = false;
+    // Fill the find's size straight away, guessing which one from the line's direction.
+    if (!cur) { cur = { field: guessSizeField(pts[2], pts[3], photoLabel), old: "" }; if (cur.field) cur.old = onUse(cur.field, lastCm); }
+    else if (cur.field) onUse(cur.field, lastCm);
+    showUse();
+  }
+  let cur = null; // the size box this measurement is filling: {field, old}
+  function assign(field) {
+    if (cur.field === field) return;
+    if (cur.field) onUse(cur.field, null, cur.old); // put back what the wrong box had
+    cur.field = field; cur.old = onUse(field, lastCm); showUse();
+  }
+  function showUse() {
+    const box = $("#scUse", bg); box.hidden = false;
+    const name = cur.field && SIZE_FIELDS.find(f => f[0] === cur.field)[1];
+    box.innerHTML = cur.field
+      ? `<div><b style="color:var(--plant)">✓ Filled in as ${esc(name)}.</b> <span class="hint">Wrong one? Tap the right size:</span></div><div class="btn-row">${SIZE_FIELDS.filter(f => f[0] !== cur.field).map(([k, l]) => `<button class="btn small" type="button" data-use="${k}">${l}</button>`).join("")}</div>`
+      : `<div><b>Which size is this?</b> <span class="hint">The line is at an angle, so I can't tell.</span></div><div class="btn-row">${SIZE_FIELDS.map(([k, l]) => `<button class="btn small plant" type="button" data-use="${k}">${l}</button>`).join("")}</div>`;
   }
   img.onload = () => { const w = Math.min(1600, img.naturalWidth); cv.width = w; cv.height = Math.round(img.naturalHeight * w / img.naturalWidth); draw(); };
   img.src = src;
@@ -3387,7 +3505,7 @@ function openScaleSheet(src, onUse) {
   $("#tickFind", bg).addEventListener("click", findTicks);
   syncTape();
   $("#scRedo", bg).addEventListener("click", () => { pts = []; auto = null; k = 1; tx = 0; ty = 0; clampView(); $("#tickMsg", bg).textContent = ""; draw(); compute(); step(); });
-  $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null) { onUse(b.dataset.use, lastCm); toast("Measurement added"); } });
+  $("#scUse", bg).addEventListener("click", e => { const b = e.target.closest("[data-use]"); if (b && lastCm != null && cur) assign(b.dataset.use); });
   const close = () => bg.remove();
   $("#scDone", bg).addEventListener("click", close);
   bg.addEventListener("click", e => { if (e.target === bg) close(); });
@@ -3484,7 +3602,7 @@ async function renderSettings() {
       <div class="btn-row"><button class="btn small" type="button" id="updCheck">Check for update</button><button class="btn small plant" type="button" id="updGet" ${lsGet("updLatest", 0) > APP_BUILD ? "" : "hidden"}><svg><use href="#i-down"/></svg>Download update</button></div>
       <p class="hint" id="updMsg" style="margin:0">Your finds stay on the phone when you update. After the download, tap the file to install it over this one.</p></div>` : /claude\.ai|claudeusercontent/.test(location.host) ? "" : `<a class="panel" href="android.html" style="text-decoration:none;color:inherit"><h3>Get the Android app</h3><p>Works fully offline and keeps recording hikes with the screen off. Tap for the download and install steps.</p></a>`}
     <label class="panel switch" for="nightMode"><span><h3>Red night light</h3><p>Turns the whole screen red so it doesn't spoil your night vision. Also on the moon button at the top.</p></span><input type="checkbox" id="nightMode" ${settings.night ? "checked" : ""}></label>
-    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
+    <div class="panel"><h3>Your log</h3><div class="btn-row"><a class="btn small" href="#import"><svg><use href="#i-img"/></svg>Import old photos</a><a class="btn small" href="#trips">Trips</a><a class="btn small" href="#hikes">Hikes</a><a class="btn small" href="#guides">Guides and tree ID</a><a class="btn small" href="#pack">Packing list</a><a class="btn small" href="#species">Species</a><a class="btn small" href="#review">Review ID changes${finds.some(f => f.idReview) ? ` (${finds.filter(f => f.idReview).length})` : ""}</a><a class="btn small ghost" href="#trash">Trash${trash.length ? ` (${trash.length})` : ""}</a></div></div>
     <label class="panel switch" for="fieldMode"><span><h3>Field mode</h3><p>Bigger text and buttons for cold or muddy hands.</p></span><input type="checkbox" id="fieldMode" ${settings.field ? "checked" : ""}></label>
     <div class="panel"><h3>iNaturalist</h3>
       ${inat.connected() ? `<p>Connected${inat.user ? ` as <b>${esc(inat.user.login)}</b>` : ""}. ${finds.filter(f => f.inatQueued).length} waiting to upload, ${finds.filter(f => f.inat && f.inat.id).length} uploaded.${lsGet("inatExpired", false) ? ` <b style="color:var(--danger)">Your sign-in has expired. Reconnect below.</b>` : ""}</p>
