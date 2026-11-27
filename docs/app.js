@@ -605,6 +605,7 @@ function setChrome({ title, back = false, tab = null, actions = "" }) {
   topActions.innerHTML = (activeTrail ? `<a href="#map" class="badge-todo" style="text-decoration:none;margin-right:6px" aria-label="Recording a trail">● Trail</a>` : "") + actions;
   $$(".tab").forEach(t => t.removeAttribute("aria-current"));
   if (tab) { const t = $(`.tab[data-tab="${tab}"]`); if (t) t.setAttribute("aria-current", "page"); }
+  const nb = $("#notesBtn"); if (nb) { if (tab === "notes") nb.setAttribute("aria-current", "page"); else nb.removeAttribute("aria-current"); }
   const mb = $("#moreBtn"); if (mb) { if (tab === "more") mb.setAttribute("aria-current", "page"); else mb.removeAttribute("aria-current"); }
 }
 function cleanupMaps() { maps.forEach(m => { try { m.remove(); } catch (e) {} }); maps = []; }
@@ -620,6 +621,7 @@ async function route() {
   if (h === "review") return renderReview();
   if (h === "inat-past") return renderInatPast();
   if (h === "hikes") return renderHikes();
+  if (h === "notes") return renderNotebook();
   if (h === "anatomy") return renderAnatomy();
   if (h === "key") return renderKey();
   if (h === "labels") return renderLabels();
@@ -1220,6 +1222,87 @@ async function renderInatPast() {
    ============================================================ */
 const hikeDate = t => fmtDate(new Date(t.start).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 const hikeFinds = t => finds.filter(f => { const x = new Date(f.foundAt).getTime(); return f.trailId === t.id || (x >= t.start - 60000 && x <= (t.end || t.start) + 60000); });
+/* ============================================================
+   Notebook: general notes that aren't tied to one find.
+   ============================================================ */
+const notebook = () => lsGet("notebook", []);
+const saveNotebook = list => lsSet("notebook", list);
+let nbEdit = null;
+async function renderNotebook() {
+  setChrome({ title: "Notes", tab: "notes" });
+  const list = notebook().sort((a, b) => b.at - a.at);
+  const cur = nbEdit ? list.find(n => n.id === nbEdit) : null;
+  main.innerHTML = `<div class="wrap view">
+    <div class="panel nbcomp">
+      <textarea id="nbText" rows="3" placeholder="A note, a spot to check, an idea for next time…">${esc(cur ? cur.text : "")}</textarea>
+      <div id="nbVoice"></div>
+      <div class="nbbar">
+        ${SpeechRec ? '<button class="btn small ghost" type="button" id="nbDict" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
+        ${canRecord() ? '<button class="btn small ghost" type="button" id="nbRec"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="#e0604f"/></svg><span>Record</span></button>' : ""}
+        <span style="flex:1"></span>
+        ${cur ? '<button class="btn small ghost" type="button" id="nbCancel">Cancel</button>' : ""}
+        <button class="btn small primary" type="button" id="nbSave">${cur ? "Save changes" : "Save note"}</button>
+      </div>
+    </div>
+    ${list.length > 4 ? `<input type="text" id="nbSearch" placeholder="Search notes" aria-label="Search notes">` : ""}
+    <div class="nblist" id="nbList">${list.length ? "" : `<p class="hint" style="text-align:center">No notes yet. These are for anything not tied to one find.</p>`}</div>
+  </div>`;
+  let voices = cur ? (cur.voice || []).map(v => ({ ...v })) : [];
+  const removed = [];
+  const audioSrc = async v => v.blob ? (v.url ||= URL.createObjectURL(v.blob)) : await store.get("photos", v.key).then(r => r ? URL.createObjectURL(r) : "").catch(() => "");
+  async function drawVoice() {
+    const rows = [];
+    for (let i = 0; i < voices.length; i++) rows.push(`<div class="vrow"><audio controls preload="metadata" src="${await audioSrc(voices[i])}"></audio><button type="button" class="laX" data-vx="${i}" aria-label="Remove recording">×</button></div>`);
+    $("#nbVoice").innerHTML = rows.join("");
+  }
+  drawVoice();
+  $("#nbVoice").addEventListener("click", e => { const x = e.target.closest("[data-vx]"); if (x) { const [v] = voices.splice(+x.dataset.vx, 1); if (v.key) removed.push(v.key); drawVoice(); } });
+  const dict = $("#nbDict"); if (dict) dict.addEventListener("click", () => { if (dict._r) dict._r.stop(); else dictateInto($("#nbText"), dict); });
+  const rec = $("#nbRec");
+  if (rec) rec.addEventListener("click", async () => {
+    if (rec._rec) { const { blob, secs } = await rec._rec.stop(); rec._rec = null; $("span", rec).textContent = "Record"; rec.setAttribute("aria-pressed", "false"); voices.push({ blob, secs, at: new Date().toISOString() }); drawVoice(); return; }
+    try { rec._rec = await recordVoice(s => { $("span", rec).textContent = `Stop ${s}s`; }); $("span", rec).textContent = "Stop"; rec.setAttribute("aria-pressed", "true"); }
+    catch (e) { toast("Couldn't use the microphone. Check its permission."); }
+  });
+  const cancel = $("#nbCancel"); if (cancel) cancel.addEventListener("click", () => { nbEdit = null; renderNotebook(); });
+  $("#nbSave").addEventListener("click", async () => {
+    const text = $("#nbText").value.trim();
+    if (!text && !voices.length) { toast("Write or record something first"); return; }
+    const saved = [];
+    for (const v of voices) {
+      if (v.blob) { const key = "v-" + uid(); await store.put("photos", v.blob, key); saved.push({ key, secs: v.secs, at: v.at }); }
+      else saved.push({ key: v.key, secs: v.secs, at: v.at });
+    }
+    for (const k of removed) await store.del("photos", k).catch(() => {});
+    const all = notebook();
+    if (cur) { const n = all.find(x => x.id === cur.id); if (n) Object.assign(n, { text, voice: saved, updatedAt: Date.now() }); }
+    else all.push({ id: uid(), text, voice: saved, at: Date.now() });
+    saveNotebook(all); nbEdit = null; toast(cur ? "Note updated" : "Note saved"); renderNotebook();
+  });
+  async function drawList(q = "") {
+    const shown = list.filter(n => !q || (n.text || "").toLowerCase().includes(q));
+    const out = [];
+    for (const n of shown) {
+      const aud = [];
+      for (const v of n.voice || []) aud.push(`<audio controls preload="metadata" src="${await audioSrc(v)}"></audio>`);
+      out.push(`<div class="panel nbitem"><div class="nbmeta"><span class="num">${esc(fmtDate(new Date(n.at).toISOString(), { weekday: "short", day: "numeric", month: "short", year: "numeric" }))} · ${esc(fmtTime(new Date(n.at).toISOString()))}</span><span><button type="button" class="btn small ghost" data-ne="${esc(n.id)}">Edit</button><button type="button" class="laX" data-nx="${esc(n.id)}" aria-label="Delete note">×</button></span></div>${n.text ? `<p style="margin:0;white-space:pre-wrap">${esc(n.text)}</p>` : ""}${aud.join("")}</div>`);
+    }
+    if (list.length) $("#nbList").innerHTML = out.join("") || `<p class="hint">No notes match.</p>`;
+  }
+  drawList();
+  const sq = $("#nbSearch"); if (sq) sq.addEventListener("input", () => drawList(sq.value.trim().toLowerCase()));
+  $("#nbList").addEventListener("click", async e => {
+    const ed = e.target.closest("[data-ne]"), x = e.target.closest("[data-nx]");
+    if (ed) { nbEdit = ed.dataset.ne; renderNotebook(); return; }
+    if (x) {
+      if (x.dataset.armed !== "1") { x.dataset.armed = "1"; x.textContent = "Delete?"; x.style.width = "auto"; x.style.fontSize = "14px"; x.style.color = "var(--danger)"; setTimeout(() => { if (document.body.contains(x)) { x.dataset.armed = ""; x.textContent = "×"; x.style.cssText = ""; } }, 3000); return; }
+      const all = notebook(); const n = all.find(y => y.id === x.dataset.nx);
+      for (const v of (n && n.voice) || []) await store.del("photos", v.key).catch(() => {});
+      saveNotebook(all.filter(y => y.id !== x.dataset.nx)); toast("Note deleted"); renderNotebook();
+    }
+  });
+}
+
 async function renderHikes() {
   setChrome({ title: "Hikes", back: true });
   const all = ((await store.all("trails").catch(() => [])) || []).sort((a, b) => b.start - a.start);
@@ -1698,149 +1781,101 @@ async function renderForm(id) {
   const canShare = !!(navigator.canShare && navigator.share);
   setChrome({ title: existing ? (existing.needsDetails ? "Add details" : "Edit find") : "New find", back: true });
   const u = unitLabel();
-  main.innerHTML = `<div class="wrap view"><form id="findForm" novalidate>
-    <div class="seg" role="group" aria-label="What did you find?">
-      <button type="button" data-v="mushroom" aria-pressed="${f.type === "mushroom"}"><svg width="18" height="18"><use href="#i-shroom"/></svg>Mushroom</button>
-      <button type="button" data-v="plant" aria-pressed="${f.type === "plant"}"><svg width="18" height="18"><use href="#i-leaf"/></svg>Plant</button>
+  // One notes box now: fold any older description, bruising and kitchen text into it so nothing is lost.
+  const foldedNotes = [f.notes, f.description && !(f.notes || "").includes(f.description) ? f.description : "", f.bruiseNote && "Bruising: " + f.bruiseNote, f.kitchen && f.kitchen.text && "Kitchen: " + f.kitchen.text].filter(Boolean).join("\n\n");
+  const dd = (id, label, body, extra = "") => `<details class="qdd" id="${id}" ${extra}><summary><span>${label}</span><small id="${id}Sum"></small></summary><div class="qbody">${body}</div></details>`;
+  main.innerHTML = `<div class="wrap view"><form id="findForm" class="qform" novalidate>
+    <div class="seg small" role="group" aria-label="What did you find?">
+      <button type="button" data-v="mushroom" aria-pressed="${f.type === "mushroom"}"><svg width="16" height="16"><use href="#i-shroom"/></svg>Mushroom</button>
+      <button type="button" data-v="plant" aria-pressed="${f.type === "plant"}"><svg width="16" height="16"><use href="#i-leaf"/></svg>Plant</button>
     </div>
 
-    <fieldset><legend>Photos</legend>
+    <div class="qsec">
       <div class="photo-grid" id="photoGrid"></div>
       <div class="photo-actions">
-        <label class="btn primary" for="camIn"><svg><use href="#i-cam"/></svg>Take photo</label>
-        <label class="btn" for="galIn"><svg><use href="#i-img"/></svg>From gallery</label>
+        <label class="btn primary small" for="camIn"><svg><use href="#i-cam"/></svg>Take photo</label>
+        <label class="btn small" for="galIn"><svg><use href="#i-img"/></svg>Gallery</label>
       </div>
-      <span class="hint" id="photoHint"></span>
       <input class="sr" type="file" id="camIn" accept="image/*" capture="environment">
       <input class="sr" type="file" id="galIn" accept="image/*" multiple>
-    </fieldset>
+    </div>
 
-    <fieldset><legend>Name and identification</legend>
-      <div class="field"><label for="name">What is it?</label>
-        <input type="text" id="name" autocomplete="off" placeholder="e.g. Chanterelle, Cantharellus cibarius" value="${esc(f.name)}">
-        <span class="hint">Leave it blank if you haven't identified it yet.</span></div>
-      <div class="panel" style="background:var(--surface-2)">
-        <h3>Shroom ID</h3>
-        <p>${canShare ? "Send the first photo to Shroom ID from the share menu, then note what it suggests here." : "Run your photo through Shroom ID, then note what it suggests here."}</p>
-        ${canShare ? `<div class="btn-row"><button class="btn small" type="button" id="shareBtn"><svg><use href="#i-share"/></svg>Send photo to Shroom ID</button></div>` : ""}
-        <div class="grid-2">
-          <div class="field"><label for="idResult">Its suggestion</label><input type="text" id="idResult" value="${esc(f.idApp.result)}" placeholder="e.g. Cantharellus cibarius"></div>
-          <div class="field"><label for="idConf">Confidence</label><div class="unit-in"><input type="number" inputmode="numeric" min="0" max="100" id="idConf" value="${f.idApp.confidence ?? ""}"><span>%</span></div></div>
-        </div>
-        <div class="btn-row"><button class="btn small ghost" type="button" id="useIdName">Use as name</button></div>
+    <input type="text" id="name" autocomplete="off" aria-label="Name" placeholder="Name, if you know it" value="${esc(f.name)}">
+
+    <div class="qsec"><div class="qlbl">Colour</div>
+      <div class="chips swatches" id="colourChips" role="group">${COLOURS.map(([n, c]) => `<button type="button" class="chip swatch" data-c="${esc(n)}" aria-pressed="${f.colours.includes(n)}" aria-label="${esc(n)}" title="${esc(n)}" style="--sw:${c}"></button>`).join("")}</div>
+      <input type="text" id="colourNote" class="qsmall" aria-label="Other colour" placeholder="Other colour, e.g. orange fading to cream" value="${esc(f.colourNote)}">
+    </div>
+
+    <div class="qsec" id="gillRow"><div class="qlbl">Gills or ridges</div>${chipGroup("gillChips", GILLS, f.gills ? [f.gills] : [])}</div>
+
+    <div class="qsec"><div class="qlbl">Size <span class="hint" style="font-weight:400">· tap Measure on a photo to fill these in</span></div>
+      <div class="qsize">
+        ${[["width", "Width"], ["height", "Height"], ["length", "Length"], ["stem", "Stem"]].map(([k, l]) => `<label class="qnum"><span>${l}</span><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="${k}" value="${toDisp(f[k])}"><span>${u}</span></div></label>`).join("")}
       </div>
-      ${inat.connected() ? `<label class="switch panel" for="inatQ"><span><b>Send to iNaturalist for expert ID</b><br><span class="hint">${f.inat && f.inat.id ? "Already on iNaturalist." : "Uploads when you have signal. Needs a location."}</span></span><input type="checkbox" id="inatQ" ${f.inat && f.inat.id ? "checked disabled" : (f.inatQueued || (!existing && lsGet("inatAuto", true))) ? "checked" : ""}></label>` : ""}
-      <div class="field"><label for="edib">Edibility</label>
+    </div>
+
+    <div class="qsec"><div class="qlbl">Smell</div>${chipGroup("smellChips", SMELL, f.smell)}</div>
+    <div class="qsec"><div class="qlbl">Texture</div>${chipGroup("texChips", TEXTURE, f.texture)}</div>
+
+    <div class="qsec">
+      <div class="qnotes-head"><div class="qlbl">Notes</div>
+        <div class="qnotes-btns">
+          ${SpeechRec ? '<button class="btn small ghost" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button>' : ""}
+          ${canRecord() ? '<button class="btn small ghost" type="button" id="recBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="#e0604f"/></svg><span>Record</span></button>' : ""}
+        </div></div>
+      <textarea id="notes" rows="2" placeholder="Anything worth remembering">${esc(foldedNotes)}</textarea>
+      <div id="voiceList" class="settings-list"></div>
+    </div>
+
+    <div class="qdds">
+      ${dd("ddWhere", "Where and when", `
+        <div class="loc-box">
+          <div class="loc-status" id="locStatus"></div>
+          <div class="coords num" id="locCoords"></div>
+          <div class="btn-row">
+            <button class="btn small" type="button" id="gpsBtn"><svg><use href="#i-gps"/></svg>My location</button>
+            <button class="btn small" type="button" id="pinBtn"><svg><use href="#i-pin"/></svg>Pin on map</button>
+            <button class="btn small" type="button" id="exifBtn" hidden><svg><use href="#i-img"/></svg>Photo's location</button>
+            <button class="btn small ghost" type="button" id="clearLoc" hidden>Clear</button>
+          </div>
+        </div>
+        <div class="coords num" id="terrainLine"></div>
+        <div class="field"><label for="foundAt">Date and time found</label><input type="datetime-local" id="foundAt" value="${toLocalInput(new Date(f.foundAt))}"></div>
+        <div class="hint" id="moonLine" style="color:var(--fg)"></div>`)}
+      ${dd("ddLooks", "Lookalikes to rule out", `
+        <p class="hint" id="laHint" style="margin:0"></p>
+        <div class="lalist" id="laList"></div>
+        <div style="display:flex;gap:8px"><input type="text" id="laAdd" class="qsmall" aria-label="Add a lookalike" placeholder="Add a lookalike"><button class="btn small" type="button" id="laAddBtn">Add</button></div>`)}
+      ${dd("ddEdib", "Edibility" + (inat.connected() ? " and iNaturalist" : ""), `
         <select id="edib">${EDIBILITY.map(([v, l]) => `<option value="${v}" ${f.edibility === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-        <span class="hint" id="edibHint">Only mark a find edible once an expert has checked it in person. Never eat anything based on an app.</span></div>
-    </fieldset>
-
-    <fieldset><legend>Lookalikes to rule out</legend>
-      <p class="hint" id="laHint" style="margin:0"></p>
-      <div class="settings-list" id="laList"></div>
-      <div class="field"><label for="laAdd">Add a lookalike</label><div style="display:flex;gap:8px"><input type="text" id="laAdd" placeholder="e.g. Jack-o'-lantern"><button class="btn small" type="button" id="laAddBtn">Add</button></div></div>
-    </fieldset>
-
-    <fieldset><legend>When</legend>
-      <div class="auto-time"><div><div class="eyebrow">Found</div><div class="big num" id="todLabel"></div></div>
-        <button class="btn small ghost" type="button" id="editTime"><svg><use href="#i-edit"/></svg>Change</button></div>
-      <div class="field" id="timeField" hidden><label for="foundAt">Date and time found</label><input type="datetime-local" id="foundAt" value="${toLocalInput(new Date(f.foundAt))}"></div>
-      <div class="hint" id="moonLine" style="color:var(--fg)"></div>
-      <span class="hint">Filled in from your phone's clock. The entry's own date and time are saved when you tap Save.</span>
-    </fieldset>
-
-    <fieldset><legend>Location</legend>
-      <div class="loc-box">
-        <div class="loc-status" id="locStatus"></div>
-        <div class="coords num" id="locCoords"></div>
-        <div class="btn-row">
-          <button class="btn small" type="button" id="gpsBtn"><svg><use href="#i-gps"/></svg>Use my location</button>
-          <button class="btn small" type="button" id="pinBtn"><svg><use href="#i-pin"/></svg>Pin on map</button>
-          <button class="btn small" type="button" id="exifBtn" hidden><svg><use href="#i-img"/></svg>Use photo's location</button>
-          <button class="btn small ghost" type="button" id="clearLoc" hidden>Clear</button>
+        <span class="hint" id="edibHint"></span>
+        ${inat.connected() ? `<label class="switch" for="inatQ"><span><b>Send to iNaturalist</b><br><span class="hint">${f.inat && f.inat.id ? "Already on iNaturalist." : "Uploads when you have signal. Needs a location."}</span></span><input type="checkbox" id="inatQ" ${f.inat && f.inat.id ? "checked disabled" : (f.inatQueued || (!existing && lsGet("inatAuto", true))) ? "checked" : ""}></label>` : ""}`)}
+      <div id="shroomFields">${dd("ddSpore", "Spore print and bruising", `
+        <div class="qlbl">Spore print</div>${chipGroup("sporeChips", SPORE, f.spore ? [f.spore] : [])}
+        <div class="qlbl">Bruises or changes colour when cut</div>${chipGroup("bruiseChips", BRUISE, f.bruise ? [f.bruise] : [])}`)}</div>
+      ${dd("ddHab", "Habitat", `
+        <div class="qlbl">Growing on</div>${chipGroup("subChips", SUBSTRATE, f.substrate ? [f.substrate] : [])}
+        <div class="qlbl">Habitat</div>${chipGroup("habChips", HABITAT, f.habitat)}
+        <input type="text" id="trees" class="qsmall" aria-label="Nearby trees or plants" placeholder="Nearby trees or plants, e.g. birch, beech" value="${esc(f.trees)}">
+        <details class="edmore"><summary>Habitat log</summary>
+          ${HAB_LOG.map(([k, l, opts]) => `<div class="hablog"><span>${l}</span>${chipGroup("hab_" + k, opts, f.hablog && f.hablog[k] ? [f.hablog[k]] : [])}</div>`).join("")}
+        </details>`)}
+      ${dd("ddWx", "Weather", `
+        <div class="loc-status none" id="wxStatus"><svg><use href="#i-cloud"/></svg><span></span></div>
+        <div class="btn-row" id="wxAutoRow"><button class="btn small" type="button" id="wxAuto"><svg><use href="#i-cloud"/></svg>Fill in from weather records</button></div>
+        ${chipGroup("wxChips", WEATHER, f.weather, "w")}
+        <div class="grid-2">
+          <div class="field"><label for="rainRecent">Last few days</label><select id="rainRecent"><option value="">Choose</option>${RAIN_RECENT.map(r => `<option ${f.rainRecent === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+          <div class="field"><label for="temp">Temperature</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" id="temp" value="${f.temp ?? ""}"><span>°C</span></div></div>
         </div>
-      </div>
-      <div class="coords num" id="terrainLine"></div>
-      <label class="switch panel" for="revisit"><span><b>Revisit this spot</b><br><span class="hint">Remind me to check here around this date next year.</span></span><input type="checkbox" id="revisit" ${f.revisit ? "checked" : ""}></label>
-    </fieldset>
+        <div class="field"><label for="soil">Soil moisture <span style="font-weight:400">(estimate)</span></label><select id="soil"><option value="">Choose</option>${SOIL.map(s => `<option ${f.soil === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+          <span class="hint" id="soilHint">${f.soilAuto && f.soilVwc != null ? `Estimated from weather models: ${f.soilVwc} m³ of water per m³ of soil.` : "Filled in from weather models when you have signal."}</span></div>
+        <input type="text" id="wxNote" class="qsmall" aria-label="Weather notes" placeholder="Weather notes, e.g. first frost two nights ago" value="${esc(f.weatherNote)}">`)}
+      ${tripList().length ? dd("ddTrip", "Trip", `<select id="tripPick" aria-label="Part of a trip"><option value="">No trip</option>${tripList().map(t => `<option value="${esc(t.id)}" ${(f.tripId || (!id && activeTripId())) === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`) : ""}
+    </div>
 
-    <fieldset><legend>Size</legend>
-      <div class="grid-2">
-        <div class="field"><label for="width">Width</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="width" value="${toDisp(f.width)}"><span>${u}</span></div></div>
-        <div class="field"><label for="height">Height</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="height" value="${toDisp(f.height)}"><span>${u}</span></div></div>
-        <div class="field"><label for="length">Length</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="length" value="${toDisp(f.length)}"><span>${u}</span></div></div>
-        <div class="field"><label for="stem">Stem height</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" min="0" id="stem" value="${toDisp(f.stem)}"><span>${u}</span></div></div>
-      </div>
-      <span class="hint" id="sizeHint"></span>
-      <span class="hint">Tip: tap Measure under a photo to work out sizes from a coin or card in the shot.</span>
-    </fieldset>
-
-    <fieldset><legend>Colour</legend>
-      ${chipGroup("colourChips", COLOURS, f.colours)}
-      <div class="field"><label for="colourNote">Colour notes</label><input type="text" id="colourNote" placeholder="e.g. cap orange fading to cream at the edge, bruises blue" value="${esc(f.colourNote)}"></div>
-    </fieldset>
-
-    <fieldset id="shroomFields"><legend>Spore print and underside</legend>
-      <div class="lbl">Spore print colour</div>
-      ${chipGroup("sporeChips", SPORE, f.spore ? [f.spore] : [])}
-      <span class="hint">Leave the cap gills-down on white and dark paper for a few hours.</span>
-      <div class="lbl">Under the cap</div>
-      ${chipGroup("gillChips", GILLS, f.gills ? [f.gills] : [])}
-    </fieldset>
-
-    <fieldset><legend>Habitat</legend>
-      <div class="lbl">Growing on</div>
-      ${chipGroup("subChips", SUBSTRATE, f.substrate ? [f.substrate] : [])}
-      <div class="lbl">Habitat</div>
-      ${chipGroup("habChips", HABITAT, f.habitat)}
-      <div class="lbl" style="margin-top:6px">Habitat log</div><span class="hint">Tap what fits. Over time it shows what each species likes.</span>
-      ${HAB_LOG.map(([k, l, opts]) => `<div class="hablog"><span>${l}</span>${chipGroup("hab_" + k, opts, f.hablog && f.hablog[k] ? [f.hablog[k]] : [])}</div>`).join("")}
-      <div class="field"><label for="trees">Nearby trees or plants</label><input type="text" id="trees" placeholder="e.g. birch, beech, under bracken" value="${esc(f.trees)}"></div>
-    </fieldset>
-
-    <fieldset><legend>Smell, texture and bruising</legend>
-      <div class="lbl">Smell</div>
-      ${chipGroup("smellChips", SMELL, f.smell)}
-      <div class="lbl">Texture</div>
-      ${chipGroup("texChips", TEXTURE, f.texture)}
-      <div id="bruiseWrap" style="display:flex;flex-direction:column;gap:12px">
-        <div class="lbl">Bruises or changes colour when cut</div>
-        ${chipGroup("bruiseChips", BRUISE, f.bruise ? [f.bruise] : [])}
-        <div class="field"><label for="bruiseNote">Bruising notes</label><input type="text" id="bruiseNote" placeholder="e.g. stem base turns yellow when scratched" value="${esc(f.bruiseNote || "")}"></div>
-      </div>
-    </fieldset>
-
-    <fieldset><legend>Notes</legend>
-      <div class="field"><label for="notes">General notes</label><textarea id="notes" placeholder="Anything worth remembering: who you were with, access to the spot, what to check next time…">${esc(f.notes || "")}</textarea></div>
-      <details class="edmore" ${(f.kitchen && (f.kitchen.text || (f.kitchen.ways || []).length || f.kitchen.rating)) ? "open" : ""}><summary>Kitchen notes</summary>
-        <div class="settings-list" style="gap:12px;margin-top:8px">
-          <p class="hint" style="margin:0">Only for finds an expert has confirmed in person. Never eat anything based on this app.</p>
-          <div><div class="lbl">How you used it</div>${chipGroup("cookChips", COOK_WAYS, (f.kitchen && f.kitchen.ways) || [])}</div>
-          <div class="field"><label for="cookRating">How it turned out</label><select id="cookRating"><option value="">Not tried yet</option>${COOK_RATINGS.map(r => `<option ${f.kitchen && f.kitchen.rating === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
-          <div class="field"><label for="cookNotes">Recipe and kitchen notes</label><textarea id="cookNotes" placeholder="How you cleaned and cooked it, how long it kept, what you'd change…">${esc((f.kitchen && f.kitchen.text) || "")}</textarea></div>
-        </div></details>
-    </fieldset>
-
-    <fieldset><legend>Description</legend>
-      <div class="field"><label for="desc">Describe it</label><textarea id="desc">${esc(f.description)}</textarea>
-        ${SpeechRec ? '<div class="btn-row"><button class="btn small" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button></div>' : ""}</div>
-      ${canRecord() ? `<div class="lbl">Voice notes</div><div id="voiceList" class="settings-list"></div><div class="btn-row"><button class="btn small" type="button" id="recBtn"><svg><use href="#i-mic"/></svg><span>Record a voice note</span></button></div><span class="hint">Voice notes work with no signal. Dictation turns speech into text, and on most phones it needs signal.</span>` : ""}
-    </fieldset>
-
-    ${tripList().length ? `<fieldset><legend>Trip</legend><div class="field"><label for="tripPick">Part of a trip</label><select id="tripPick"><option value="">No trip</option>${tripList().map(t => `<option value="${esc(t.id)}" ${(f.tripId || (!id && activeTripId())) === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></fieldset>` : ""}
-    <fieldset><legend>Recent weather</legend>
-      <div class="loc-box" id="wxStatusBox"><div class="loc-status none" id="wxStatus"><svg><use href="#i-cloud"/></svg><span></span></div>
-        <div class="btn-row" id="wxAutoRow"><button class="btn small" type="button" id="wxAuto"><svg><use href="#i-cloud"/></svg>Fill in from weather records</button></div></div>
-      <div class="lbl">On the day</div>
-      ${chipGroup("wxChips", WEATHER, f.weather, "w")}
-      <div class="grid-2">
-        <div class="field"><label for="rainRecent">Last few days</label><select id="rainRecent"><option value="">Choose</option>${RAIN_RECENT.map(r => `<option ${f.rainRecent === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
-        <div class="field"><label for="temp">Temperature</label><div class="unit-in"><input type="number" inputmode="decimal" step="any" id="temp" value="${f.temp ?? ""}"><span>°C</span></div></div>
-      </div>
-      <div class="field"><label for="soil">Soil moisture <span style="font-weight:400">(rough estimate)</span></label><select id="soil"><option value="">Choose</option>${SOIL.map(s => `<option ${f.soil === s ? "selected" : ""}>${s}</option>`).join("")}</select>
-        <span class="hint" id="soilHint">${f.soilAuto && f.soilVwc != null ? `Estimated from weather models: ${f.soilVwc} m³ of water per m³ of soil, near the surface. Change it if the ground felt different.` : "Filled in from weather models when you have signal. It's an estimate for the area, not a measurement of this spot."}</span></div>
-      <div class="field"><label for="wxNote">Weather notes</label><input type="text" id="wxNote" placeholder="e.g. first frost two nights ago" value="${esc(f.weatherNote)}"></div>
-    </fieldset>
+    <label class="switch qrevisit" for="revisit"><span>Revisit this spot next year</span><input type="checkbox" id="revisit" ${f.revisit ? "checked" : ""}></label>
 
     <div class="savebar"><a class="btn ghost" href="${existing ? "#find-" + esc(f.id) : "#log"}">Cancel</a>${existing && navNeighbors(f.id).next ? `<button class="btn" type="submit" id="saveNext" data-next="${esc(navNeighbors(f.id).next)}">Save, next ›</button>` : ""}<button class="btn primary" type="submit" id="saveBtn">Save find</button></div>
   </form></div>`;
@@ -1850,14 +1885,11 @@ async function renderForm(id) {
   function applyType() {
     $$(".seg button", form).forEach(x => x.setAttribute("aria-pressed", x.dataset.v === f.type));
     $("#shroomFields").hidden = f.type !== "mushroom";
-    $("#bruiseWrap").hidden = f.type !== "mushroom";
-    $("#desc").placeholder = f.type === "plant" ? "Leaf shape, flowers, smell, what it's growing near…" : "Cap shape and texture, ring, smell, how the stem base looks, bruising…";
-    $("#sizeHint").textContent = f.type === "plant" ? "For plants, stem height is the main stalk from the ground to the first leaves or flower." : "Width is the cap's widest point. Stem height is from the ground to the underside of the cap.";
-    $("#photoHint").textContent = f.type === "plant" ? "Add the leaves, flowers and the whole plant. Put a coin or bank card beside it, and tap Measure to get sizes from the photo." : "Add the cap, the underside, the stem base and a spore print. Put a coin or bank card beside it, and tap Measure to get sizes from the photo.";
+    $("#gillRow").hidden = f.type !== "mushroom";
   }
   $$(".seg button", form).forEach(b => b.addEventListener("click", () => { f.type = b.dataset.v; applyType(); }));
   applyType();
-  multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips"); multiSelect(form, "cookChips");
+  multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips");
   singleSelect(form, "sporeChips"); singleSelect(form, "gillChips"); singleSelect(form, "subChips");
   HAB_LOG.forEach(([k]) => singleSelect(form, "hab_" + k));
   multiSelect(form, "smellChips"); multiSelect(form, "texChips"); singleSelect(form, "bruiseChips");
@@ -1867,7 +1899,7 @@ async function renderForm(id) {
   const dangerLabel = { deadly: "Deadly", toxic: "Toxic", inedible: "Inedible", unknown: "Check" };
   function syncLooks() {
     if (!document.body.contains(form)) return;
-    const sugg = suggestLookalikes($("#name").value + " " + $("#idResult").value);
+    const sugg = suggestLookalikes($("#name").value + " " + ((f.idApp && f.idApp.result) || ""));
     // Drop untouched suggestions that no longer match, then add new ones.
     looks = looks.filter(l => !l.suggested || l.ruledOut || l.note || sugg.some(s => s.name === l.name));
     for (const s of sugg) if (!looks.some(l => l.name === s.name)) looks.push({ ...s, suggested: true, ruledOut: false, note: "" });
@@ -1877,15 +1909,20 @@ async function renderForm(id) {
     $("#laHint").textContent = looks.length
       ? "Check each one and say how you ruled it out. This list isn't complete, so an expert should still check your find."
       : "Type a name above and common dangerous lookalikes appear here. You can add your own too.";
-    $("#laList").innerHTML = looks.map((l, i) => `<div class="panel" style="gap:8px">
-        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><b style="min-width:0">${esc(l.name)}</b><span class="edib ${esc(l.danger || "unknown")}" style="flex:none">${esc(dangerLabel[l.danger] || "Check")}</span></div>
-        ${l.how ? `<p>${esc(l.how)}</p>` : ""}
-        <label class="switch" style="font-size:15px"><span>I've ruled this out</span><input type="checkbox" data-lr="${i}" ${l.ruledOut ? "checked" : ""}></label>
-        <input type="text" data-ln="${i}" placeholder="How you ruled it out, e.g. true gills absent" value="${esc(l.note || "")}" aria-label="How you ruled out ${esc(l.name)}">
-        ${l.suggested ? "" : `<button type="button" class="btn small ghost" data-lx="${i}" style="align-self:flex-start">Remove</button>`}
+    $("#laList").innerHTML = looks.map((l, i) => `<div class="larow">
+        <div class="latop"><label class="latick"><input type="checkbox" data-lr="${i}" ${l.ruledOut ? "checked" : ""} aria-label="Ruled out ${esc(l.name)}"><b>${esc(l.name)}</b></label><span class="edib ${esc(l.danger || "unknown")}">${esc(dangerLabel[l.danger] || "Check")}</span>${l.suggested ? "" : `<button type="button" class="laX" data-lx="${i}" aria-label="Remove ${esc(l.name)}">×</button>`}</div>
+        ${l.how ? `<p class="hint" style="margin:0">${esc(l.how)}</p>` : ""}
+        <input type="text" class="qsmall" data-ln="${i}" placeholder="How you ruled it out" value="${esc(l.note || "")}" aria-label="How you ruled out ${esc(l.name)}">
       </div>`).join("");
+    looksSum();
   }
-  $("#laList").addEventListener("change", e => { const c = e.target.closest("[data-lr]"); if (c) looks[+c.dataset.lr].ruledOut = c.checked; });
+  function looksSum() {
+    const el = $("#ddLooksSum"); if (!el) return;
+    const done = looks.filter(l => l.ruledOut).length, bad = looks.some(l => !l.ruledOut && (l.danger === "deadly" || l.danger === "toxic"));
+    el.textContent = looks.length ? `${done} of ${looks.length} ruled out` : "None yet";
+    el.className = bad ? "warn" : "";
+  }
+  $("#laList").addEventListener("change", e => { const c = e.target.closest("[data-lr]"); if (c) { looks[+c.dataset.lr].ruledOut = c.checked; looksSum(); } });
   $("#laList").addEventListener("input", e => { const n = e.target.closest("[data-ln]"); if (n) looks[+n.dataset.ln].note = n.value; });
   $("#laList").addEventListener("click", e => { const x = e.target.closest("[data-lx]"); if (x) { looks.splice(+x.dataset.lx, 1); drawLooks(); } });
   const addLook = () => { const v = $("#laAdd").value.trim(); if (!v) return; looks.push({ name: v, danger: "unknown", how: "", ruledOut: false, note: "" }); $("#laAdd").value = ""; drawLooks(); };
@@ -1894,7 +1931,6 @@ async function renderForm(id) {
   let laTimer = null;
   const laLater = () => { clearTimeout(laTimer); laTimer = setTimeout(syncLooks, 300); };
   $("#name").addEventListener("input", laLater);
-  $("#idResult").addEventListener("input", laLater);
   syncLooks();
 
   // Edibility warning
@@ -1904,32 +1940,17 @@ async function renderForm(id) {
       ? "Marked edible. Only keep this if an expert checked this exact find in person. The app will still warn you not to eat it based on the log."
       : "Only mark a find edible once an expert has checked it in person. Never eat anything based on an app.";
     $("#edibHint").style.color = v === "edible" ? "var(--warn-fg)" : "";
+    $("#ddEdibSum").textContent = (EDIBILITY.find(x => x[0] === v) || [, ""])[1];
   };
   $("#edib").addEventListener("change", edibHint); edibHint();
 
-  // Shroom ID
-  $("#useIdName").addEventListener("click", () => { const v = $("#idResult").value.trim(); if (v) { $("#name").value = v; toast("Name filled in"); } });
-  const sb = $("#shareBtn");
-  if (sb) sb.addEventListener("click", async () => {
-    const first = photos[0];
-    if (!first) { toast("Add a photo first"); return; }
-    try {
-      const blob = first.blob || await store.get("photos", first.key);
-      if (typeof blob === "string") { toast("Example photos can't be shared"); return; }
-      const file = new File([blob], "find.jpg", { type: "image/jpeg" });
-      if (!navigator.canShare({ files: [file] })) { toast("Sharing photos isn't supported here"); return; }
-      await navigator.share({ files: [file], title: "Mushroom photo" });
-    } catch (e) { if (e && e.name !== "AbortError") toast("Couldn't open the share menu"); }
-  });
-
   // Time
-  const todLabel = () => { const d = new Date($("#foundAt").value || f.foundAt); $("#todLabel").textContent = `${timeOfDay(d)} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} · ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`; };
+  const todLabel = () => wwSum();
   todLabel();
   const moonLine = () => { const m = moonPhase($("#foundAt").value ? new Date($("#foundAt").value) : f.foundAt); $("#moonLine").innerHTML = `${moonIcon(m.age)} ${esc(m.name)}, ${m.illum}% lit`; };
   moonLine();
   $("#foundAt").addEventListener("input", todLabel);
   $("#foundAt").addEventListener("input", moonLine);
-  $("#editTime").addEventListener("click", () => { $("#timeField").hidden = false; $("#editTime").hidden = true; $("#foundAt").focus(); });
 
   // Photos
   async function drawPhotos() {
@@ -1973,6 +1994,14 @@ async function renderForm(id) {
   $("#galIn").addEventListener("change", onFiles);
 
   // Location
+  function wwSum(msg) {
+    const el = $("#ddWhereSum"); if (!el) return;
+    const d = new Date($("#foundAt").value || f.foundAt);
+    const when = d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const where = f.lat != null ? ({ gps: "GPS", photo: "From photo", pin: "Pinned" }[f.locSource] || "Saved") + (f.acc ? ` ±${f.acc} m` : "") : (msg && /Finding/.test(msg) ? "Finding…" : "No location");
+    el.textContent = where + " · " + when;
+    el.className = f.lat == null && !(msg && /Finding/.test(msg)) ? "warn" : "";
+  }
   function showLoc(msg) {
     const ok = f.lat != null;
     $("#locStatus").className = "loc-status " + (ok ? "ok" : "none");
@@ -1981,6 +2010,7 @@ async function renderForm(id) {
     $("#locStatus span").textContent = msg || (ok ? srcText : "No location yet");
     $("#locCoords").textContent = ok ? `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}${f.acc ? ` · accurate to about ${f.acc} m` : ""}` : (geoAvailable() ? "" : "GPS isn't available here. Pin the spot on the map instead.");
     $("#clearLoc").hidden = !ok;
+    wwSum(msg);
     wxRow();
   }
   function setLoc(loc, src) {
@@ -2015,6 +2045,7 @@ async function renderForm(id) {
     const can = netOK() && f.lat != null;
     $("#wxAutoRow").hidden = !can;
     if (wxBusy) return;
+    const ws = $("#ddWxSum"); if (ws) ws.textContent = wxDoneFor ? "Filled in" : picked(form, "wxChips", "w").join(", ");
     if (!netOK()) wxStatus("No signal. Fill in the weather by hand, or edit this find later to fill it in.", false);
     else if (f.lat == null) wxStatus("Weather fills in by itself once the location is set.", false);
     else if (wxDoneFor) wxStatus("Weather filled in from Open-Meteo. You can change anything below.", true);
@@ -2040,6 +2071,7 @@ async function renderForm(id) {
       }
       wxDoneFor = sig; wxBusy = false;
       wxStatus("Weather filled in from Open-Meteo. You can change anything below.", true);
+      { const ws = $("#ddWxSum"); if (ws) ws.textContent = [w.temp != null ? w.temp + "°C" : "", ...w.chips].filter(Boolean).slice(0, 3).join(", "); }
       if (!auto) toast("Weather filled in");
     } catch (e) {
       wxDoneFor = sig; wxBusy = false;
@@ -2065,7 +2097,7 @@ async function renderForm(id) {
     for (let i = 0; i < voices.length; i++) {
       const v = voices[i];
       const src = v.blob ? (v.url ||= URL.createObjectURL(v.blob)) : await store.get("photos", v.key).then(r => r ? URL.createObjectURL(r) : "").catch(() => "");
-      rows.push(`<div class="switch"><audio controls preload="metadata" src="${src}" style="width:100%;min-width:0"></audio><button type="button" class="btn small ghost" data-vx="${i}" aria-label="Remove voice note">Remove</button></div>`);
+      rows.push(`<div class="vrow"><audio controls preload="metadata" src="${src}"></audio><button type="button" class="laX" data-vx="${i}" aria-label="Remove voice note">×</button></div>`);
     }
     vl.innerHTML = rows.join("");
   }
@@ -2074,12 +2106,12 @@ async function renderForm(id) {
   if (vlist) vlist.addEventListener("click", e => { const x = e.target.closest("[data-vx]"); if (x) { const [v] = voices.splice(+x.dataset.vx, 1); if (v.key) removedVoice.push(v.key); drawVoices(); } });
   const recBtn = $("#recBtn");
   if (recBtn) recBtn.addEventListener("click", async () => {
-    if (recBtn._rec) { const { blob, secs } = await recBtn._rec.stop(); recBtn._rec = null; $("span", recBtn).textContent = "Record a voice note"; voices.push({ blob, secs, at: new Date().toISOString() }); drawVoices(); return; }
-    try { recBtn._rec = await recordVoice(s => { $("span", recBtn).textContent = `Stop recording (${s}s)`; }); $("span", recBtn).textContent = "Stop recording"; }
+    if (recBtn._rec) { const { blob, secs } = await recBtn._rec.stop(); recBtn._rec = null; $("span", recBtn).textContent = "Record"; recBtn.setAttribute("aria-pressed", "false"); voices.push({ blob, secs, at: new Date().toISOString() }); drawVoices(); return; }
+    try { recBtn._rec = await recordVoice(s => { $("span", recBtn).textContent = `Stop ${s}s`; }); $("span", recBtn).textContent = "Stop"; recBtn.setAttribute("aria-pressed", "true"); }
     catch (e) { toast("Couldn't use the microphone. Check its permission for this site."); }
   });
   const dictBtn = $("#dictBtn");
-  if (dictBtn) dictBtn.addEventListener("click", () => { if (dictBtn._r) dictBtn._r.stop(); else dictateInto($("#desc"), dictBtn); });
+  if (dictBtn) dictBtn.addEventListener("click", () => { if (dictBtn._r) dictBtn._r.stop(); else dictateInto($("#notes"), dictBtn); });
 
   // Terrain: GPS height straight away, slope from the elevation model when there's signal.
   function showTerrain() { $("#terrainLine").textContent = terrainText(f) ? "Terrain: " + terrainText(f) : ""; }
@@ -2104,10 +2136,9 @@ async function renderForm(id) {
     for (const k of ["width", "height", "length", "stem"]) f[k] = fromDisp($("#" + k).value);
     f.colours = picked(form, "colourChips");
     f.colourNote = $("#colourNote").value.trim();
-    f.description = $("#desc").value.trim();
+    f.description = "";
     f.notes = $("#notes").value.trim() || undefined;
-    { const k = { ways: picked(form, "cookChips"), rating: $("#cookRating").value, text: $("#cookNotes").value.trim() };
-      f.kitchen = k.ways.length || k.rating || k.text ? { ...k, at: (f.kitchen && f.kitchen.at) || Date.now() } : undefined; }
+    if (f.kitchen) { f.kitchen = { ...f.kitchen, text: "" }; if (!(f.kitchen.ways || []).length && !f.kitchen.rating) delete f.kitchen; }
     f.weather = picked(form, "wxChips", "w");
     f.rainRecent = $("#rainRecent").value;
     f.temp = $("#temp").value === "" ? null : +$("#temp").value;
@@ -2135,12 +2166,10 @@ async function renderForm(id) {
     f.smell = picked(form, "smellChips");
     f.texture = picked(form, "texChips");
     f.bruise = f.type === "mushroom" ? (picked(form, "bruiseChips")[0] || "") : "";
-    f.bruiseNote = f.type === "mushroom" ? $("#bruiseNote").value.trim() : "";
+    f.bruiseNote = "";
     f.lookalikes = looks.map(({ name, danger, how, ruledOut, note, suggested }) => ({ name, danger, how, ruledOut, note: note.trim(), suggested: !!suggested }));
     if (activeTrail && !f.trailId) f.trailId = activeTrail.id;
     const tripPick = $("#tripPick"); if (tripPick) { if (tripPick.value) f.tripId = tripPick.value; else delete f.tripId; }
-    const conf = $("#idConf").value;
-    f.idApp = { source: "Shroom ID", result: $("#idResult").value.trim(), confidence: conf === "" ? null : Math.max(0, Math.min(100, Math.round(+conf))) };
     f.updatedAt = nowISO;
     if (!f.createdAt) f.createdAt = nowISO;
     delete f.needsDetails;
@@ -2485,8 +2514,9 @@ function dictateInto(textarea, btn) {
     textarea.value = base + finalText + interim;
   };
   r.onerror = e => { toast(e.error === "network" ? "Dictation needs signal on this phone. Record a voice note instead." : e.error === "not-allowed" ? "Microphone permission is off" : "Dictation stopped"); };
-  r.onend = () => { btn.textContent = "Dictate"; btn.setAttribute("aria-pressed", "false"); btn._r = null; };
-  r.start(); btn._r = r; btn.textContent = "Stop dictating"; btn.setAttribute("aria-pressed", "true");
+  const lab = $("span", btn) || btn;
+  r.onend = () => { lab.textContent = "Dictate"; btn.setAttribute("aria-pressed", "false"); btn._r = null; };
+  r.start(); btn._r = r; lab.textContent = "Stop"; btn.setAttribute("aria-pressed", "true");
 }
 async function voiceQuickLog(btn) {
   if (btn._rec) { const { blob, secs } = await btn._rec.stop(); btn._rec = null; saveVoiceFind(blob, secs); return; }
@@ -2701,7 +2731,7 @@ async function inatWhoAmI() {
 let inatBusy = false;
 async function inatUpload(f) {
   const geopriv = lsGet("inatGeo", "obscured");
-  const notes = [f.description, f.colourNote && "Colour: " + f.colourNote, (f.colours || []).length && "Colours: " + f.colours.join(", "),
+  const notes = [f.notes, f.description, f.colourNote && "Colour: " + f.colourNote, (f.colours || []).length && "Colours: " + f.colours.join(", "),
     f.spore && "Spore print: " + f.spore, f.gills && "Underside: " + f.gills, f.smell.length && "Smell: " + f.smell.join(", "), f.texture.length && "Texture: " + f.texture.join(", "),
     f.bruise && "Bruising: " + f.bruise + (f.bruiseNote ? " (" + f.bruiseNote + ")" : ""), f.substrate && "Growing on: " + f.substrate, f.habitat.length && "Habitat: " + f.habitat.join(", "), f.trees && "Nearby: " + f.trees,
     f.width != null && `Cap/width ${(+f.width).toFixed(1)} cm`, f.stem != null && `Stem ${(+f.stem).toFixed(1)} cm`].filter(Boolean).join("\n");
@@ -3761,18 +3791,19 @@ async function saveFile(filename, data, type) {
 const stamp = () => new Date().toISOString().slice(0, 10);
 async function exportBackup() {
   const photos = {};
-  for (const f of finds) for (const p of [...f.photos, ...f.voice]) {
+  const nbVoice = notebook().flatMap(n => n.voice || []);
+  for (const p of [...finds.flatMap(f => [...f.photos, ...f.voice]), ...nbVoice]) {
     const rec = await store.get("photos", p.key).catch(() => null);
     if (rec) photos[p.key] = typeof rec === "string" ? rec : await blobToDataURL(rec);
   }
-  const json = JSON.stringify({ app: "spore-and-leaf", version: 1, exportedAt: new Date().toISOString(), finds, photos, trips: lsGet("trips", []) });
+  const json = JSON.stringify({ app: "spore-and-leaf", version: 1, exportedAt: new Date().toISOString(), finds, photos, trips: lsGet("trips", []), notebook: notebook() });
   const ok = await saveFile(`shroom-log-backup-${stamp()}.json`, json, "application/json");
   if (ok) { lsSet("lastBackup", Date.now()); toast("Backup saved"); }
 }
 async function exportCSV() {
-  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","elevation_m","slope_deg","slopeFaces","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","description","photos","createdAt","updatedAt"];
+  const cols = ["name","type","foundAt","timeOfDay","lat","lng","locSource","width_cm","height_cm","length_cm","stem_cm","colours","colourNote","spore","gills","substrate","habitat","trees","edibility","shroomId","shroomIdConfidence","weather","rainRecent","temp_c","soilMoisture","elevation_m","slope_deg","slopeFaces","moonPhase","moonLitPercent","weatherNote","tags","revisit","smell","texture","bruising","lookalikes","notes","photos","createdAt","updatedAt"];
   const q = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", f.elev, f.slope, f.aspect == null ? "" : compassName(f.aspect), (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), f.description, f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
+  const rows = finds.map(f => [f.name, f.type, f.foundAt, timeOfDay(new Date(f.foundAt)), f.lat, f.lng, f.locSource, f.width, f.height, f.length, f.stem, (f.colours || []).join("; "), f.colourNote, f.spore, f.gills, f.substrate, f.habitat.join("; "), f.trees, f.edibility, f.idApp && f.idApp.result, f.idApp && f.idApp.confidence, (f.weather || []).join("; "), f.rainRecent, f.temp, f.soil ? f.soil + (f.soilAuto ? " (estimate)" : "") : "", f.elev, f.slope, f.aspect == null ? "" : compassName(f.aspect), (f.moon || moonPhase(f.foundAt)).name, (f.moon || moonPhase(f.foundAt)).illum, f.weatherNote, f.tags.join("; "), f.revisit ? "yes" : "", f.smell.join("; "), f.texture.join("; "), [f.bruise, f.bruiseNote].filter(Boolean).join(": "), f.lookalikes.map(l => l.name + (l.ruledOut ? " (ruled out)" : "")).join("; "), [f.notes, f.description].filter(Boolean).join("\n\n"), f.photos.length, f.createdAt, f.updatedAt].map(q).join(","));
   const ok = await saveFile(`shroom-log-${stamp()}.csv`, "﻿" + [cols.join(","), ...rows].join("\n"), "text/csv");
   if (ok) toast("Spreadsheet saved");
 }
@@ -3784,6 +3815,11 @@ async function importBackup(file) {
     const have = new Set(finds.map(f => f.id));
     let added = 0;
     if (Array.isArray(j.trips)) { const mine = lsGet("trips", []); const ids = new Set(mine.map(t => t.id)); saveTrips([...mine, ...j.trips.filter(t => !ids.has(t.id))]); }
+    if (Array.isArray(j.notebook)) {
+      const mine = notebook(); const ids = new Set(mine.map(n => n.id)); const add = j.notebook.filter(n => !ids.has(n.id));
+      for (const n of add) for (const v of n.voice || []) { const d = j.photos && j.photos[v.key]; if (d) await store.put("photos", await dataURLToBlob(d), v.key); }
+      if (add.length) saveNotebook([...mine, ...add]);
+    }
     for (const f of j.finds) {
       if (have.has(f.id)) continue;
       const nf = normalise(f);

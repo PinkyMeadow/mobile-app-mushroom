@@ -250,6 +250,53 @@ legend { font-family: var(--font-display); font-size: 19px; font-weight: 650; pa
 .field > label, .lbl { font-size: 14px; color: var(--muted); font-weight: 700; }
 .hint { font-size: 13px; color: var(--faint); }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* Quick find form: compact rows, details tucked into dropdowns. */
+form.qform { gap: 16px; }
+.qform .seg { align-self: center; width: min(100%, 300px); }
+.qsec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.qlbl { font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+.qform .chips { gap: 6px; }
+.qform .chip { padding: 5px 11px; font-size: 13.5px; min-height: 32px; gap: 6px; }
+.qform .chip .sw { width: 12px; height: 12px; }
+.qform input.qsmall, .qform .qnum input, .qform .qbody select, .qform .qbody input[type=text], .qform .qbody input[type=number], .qform .qbody input[type=datetime-local] { min-height: 40px; padding-top: 8px; padding-bottom: 8px; font-size: 15px; }
+.qform .photo-actions .btn { min-width: 0; }
+.qform .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.qform .photo-grid:empty { display: none; }
+.chips.swatches { gap: 8px; }
+.chip.swatch { width: 34px; height: 34px; min-height: 0; padding: 0; border-radius: 50%; background: var(--sw); border: 2px solid rgb(255 255 255 / .18); position: relative; }
+.chip.swatch[aria-pressed="true"] { background: var(--sw); border-color: var(--bg); box-shadow: 0 0 0 2px var(--fg); }
+.chip.swatch[aria-pressed="true"]::after { content: ""; position: absolute; left: 11px; top: 6px; width: 7px; height: 13px; border: solid #fff; border-width: 0 3px 3px 0; transform: rotate(45deg); filter: drop-shadow(0 0 1.5px rgb(0 0 0 / .9)); }
+.qsize { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.qnum { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.qnum > span { font-size: 12px; color: var(--faint); }
+.qnum .unit-in input { padding-left: 10px; padding-right: 30px; width: 100%; }
+.qnum .unit-in span { right: 8px; font-size: 12px; }
+.qnotes-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.qnotes-btns { display: flex; gap: 4px; }
+.qnotes-btns .btn { min-height: 32px; padding: 4px 10px; font-size: 13px; gap: 5px; }
+.qnotes-btns .btn svg { width: 16px; height: 16px; }
+.qnotes-btns .btn[aria-pressed="true"] { color: #ff7a6a; border-color: currentColor; }
+.qform textarea#notes { min-height: 64px; }
+.vrow { display: flex; align-items: center; gap: 6px; }
+.vrow audio { flex: 1; min-width: 0; height: 36px; }
+.qdds { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.qdd + .qdd, .qdds > div + .qdd, .qdd + div > .qdd { border-top: 1px solid var(--line); }
+.qdds > div[hidden] { display: none; }
+.qdd > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 12px 14px; min-height: 46px; font-weight: 600; font-size: 15px; }
+.qdd > summary::-webkit-details-marker { display: none; }
+.qdd > summary > small { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 13px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.qdd > summary > small.warn { color: var(--warn-fg); }
+.qdd > summary::after { content: ""; flex: none; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); margin: -3px 2px 0 0; transition: transform .2s; }
+.qdd[open] > summary::after { transform: rotate(-135deg); margin-top: 3px; }
+.qbody { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
+.qbody .loc-box { background: var(--surface-2); padding: 10px 12px; }
+.lalist { display: flex; flex-direction: column; gap: 8px; }
+.larow { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--surface-2); border-radius: 12px; }
+.latop { display: flex; align-items: center; gap: 8px; }
+.latick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; }
+.latick input { width: 20px; height: 20px; accent-color: var(--plant); flex: none; margin: 0; }
+.laX { background: none; border: 0; color: var(--muted); font-size: 20px; width: 30px; height: 30px; cursor: pointer; flex: none; }
+.qrevisit { padding: 4px 2px; font-size: 15px; color: var(--muted); }
 .unit-in { position: relative; }
 .unit-in input { padding-right: 44px; }
 .unit-in span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); font-size: 14px; pointer-events: none; }
@@ -332,8 +379,16 @@ body.camp *, body.camp *::before, body.camp *::after { transition: none !importa
 /* Red night light: multiplying by red keeps only the red channel, maps and photos included. */
 body.night::after { content: ""; position: fixed; inset: 0; background: #c40000; mix-blend-mode: multiply; pointer-events: none; z-index: 2147483647; }
 #nightBtn[aria-pressed="true"] { color: #ff5a4a; }
-#moreBtn { text-decoration: none; }
-#moreBtn[aria-current="page"] { color: var(--shroom); }
+#moreBtn, #notesBtn { text-decoration: none; }
+#moreBtn[aria-current="page"], #notesBtn[aria-current="page"] { color: var(--shroom); }
+.nbcomp { gap: 8px; }
+.nbbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nbbar .btn[aria-pressed="true"] { color: #ff7a6a; border-color: currentColor; }
+.nblist { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.nbitem { gap: 8px; }
+.nbitem audio { width: 100%; height: 36px; }
+.nbmeta { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--faint); font-size: 13px; }
+.nbmeta > span:last-child { display: flex; align-items: center; gap: 2px; }
 .toast { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-weight: 700; z-index: 1600; font-size: 15px; max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
 
 /* Search, tags, quick log */
@@ -435,6 +490,7 @@ body.field .quick .qi { width: 64px; height: 64px; }
     <symbol id="i-warn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 2.8 19.5h18.4L12 3.5Z"/><path d="M12 10v4.2M12 17.2v.1"/></g></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h9l3.5 3.5v13.5H6Z"/><path d="M14.5 3.5V7.5h4M9 11.5h6.5M9 15h6.5M9 18h4"/></g></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></g></symbol>
     <symbol id="i-cal" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></g></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></g></symbol>
@@ -452,6 +508,7 @@ body.field .quick .qi { width: 64px; height: 64px; }
     <h1 id="title">Shroom Log</h1>
     <span id="topActions"></span>
     <button class="icon-btn" id="nightBtn" type="button" aria-label="Red night light" aria-pressed="false"><svg><use href="#i-moon"/></svg></button>
+    <a class="icon-btn" id="notesBtn" href="#notes" aria-label="Notes"><svg><use href="#i-note"/></svg></a>
     <a class="icon-btn" id="moreBtn" href="#more" aria-label="More and settings"><svg><use href="#i-cog"/></svg></a>
   </div>
 </header>
