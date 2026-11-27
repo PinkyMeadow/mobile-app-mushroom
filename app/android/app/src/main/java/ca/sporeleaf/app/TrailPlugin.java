@@ -122,6 +122,43 @@ public class TrailPlugin extends Plugin {
         }
     }
 
+    /** Asks for permission to show notifications (Android 13 and later). */
+    @PluginMethod
+    public void notifyPermission(PluginCall call) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 && getPermissionState("notifications") != PermissionState.GRANTED) {
+            requestPermissionForAlias("notifications", call, "afterNotifyPermission");
+            return;
+        }
+        call.resolve();
+    }
+
+    @PermissionCallback
+    private void afterNotifyPermission(PluginCall call) { call.resolve(); }
+
+    /** Shows a notification, such as a fruiting alert. */
+    @PluginMethod
+    public void showAlert(PluginCall call) {
+        android.content.Context c = getContext();
+        android.app.NotificationManager nm = (android.app.NotificationManager) c.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(new android.app.NotificationChannel("alerts", "Fruiting alerts", android.app.NotificationManager.IMPORTANCE_DEFAULT));
+        }
+        Intent open = new Intent(c, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        android.app.PendingIntent pi = android.app.PendingIntent.getActivity(c, 2, open, android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+        String body = call.getString("body", "");
+        android.app.Notification n = new androidx.core.app.NotificationCompat.Builder(c, "alerts")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(call.getString("title", "Spore & Leaf"))
+            .setContentText(body)
+            .setStyle(new androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build();
+        try { nm.notify((int) (System.currentTimeMillis() % 100000) + 10, n); call.resolve(); }
+        catch (Exception e) { call.reject(e.getMessage()); }
+    }
+
     @PluginMethod
     public void info(PluginCall call) {
         JSObject res = new JSObject();

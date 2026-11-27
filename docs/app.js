@@ -622,6 +622,7 @@ async function route() {
   if (h.startsWith("species-")) return renderSpecies(decodeURIComponent(h.slice(8)));
   if (h === "map") return renderMap();
   if (h === "season") return renderSeason();
+  if (h === "season-stats") return renderSeason("stats");
   if (h === "edibles") return renderEdibles();
   if (h === "more") return renderSettings();
   if (h === "safety") return renderSafety();
@@ -675,7 +676,7 @@ function matches(f) {
   for (const q of view.quick) { const d = QUICK.find(x => x[0] === q); if (d && !d[2](f)) return false; }
   if (view.trip && f.tripId !== view.trip) return false;
   if (view.q) {
-    const hay = [f.name, f.description, f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
+    const hay = [f.name, f.description, f.notes, f.kitchen && f.kitchen.text, ...((f.kitchen && f.kitchen.ways) || []), f.colourNote, f.trees, f.substrate, f.weatherNote, ...(f.habitat || []), ...(f.tags || []), ...(f.colours || []), f.idApp && f.idApp.result, ...(f.smell || []), ...(f.texture || []), f.bruise, f.soil, (f.moon || {}).name, ...(f.lookalikes || []).map(l => l.name)].join(" ").toLowerCase();
     return view.q.toLowerCase().split(/\s+/).every(w => hay.includes(w.replace(/^#/, "")));
   }
   return true;
@@ -1479,6 +1480,8 @@ async function renderDetail(id) {
     ${idBits.length ? `<div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">${idBits.join("")}</div>` : ""}
     ${colours || f.colourNote ? `<div class="section"><h3>Colour</h3>${colours ? `<div class="chips">${colours}</div>` : ""}${f.colourNote ? `<p>${esc(f.colourNote)}</p>` : ""}</div>` : ""}
     ${f.description ? `<div class="section"><h3>Description</h3><p>${esc(f.description)}</p></div>` : ""}
+    ${f.notes ? `<div class="section"><h3>Notes</h3><p style="white-space:pre-wrap">${esc(f.notes)}</p></div>` : ""}
+    ${f.kitchen ? `<div class="section"><h3>Kitchen notes</h3><div class="panel" style="gap:8px">${(f.kitchen.ways || []).length || f.kitchen.rating ? `<div class="chips">${(f.kitchen.ways || []).map(x => `<span class="chip" style="cursor:default">${esc(x)}</span>`).join("")}${f.kitchen.rating ? `<span class="edib edible">${esc(f.kitchen.rating)}</span>` : ""}</div>` : ""}${f.kitchen.text ? `<p style="margin:0;white-space:pre-wrap">${esc(f.kitchen.text)}</p>` : ""}<p class="hint" style="margin:0">Only ever cook what an expert has confirmed in person.</p></div></div>` : ""}
     <div class="section"><h3>Weather</h3>
       <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
         <div class="fact"><span class="eyebrow">On the day</span><span class="v">${esc((f.weather || []).join(", ") || "—")}</span></div>
@@ -1545,6 +1548,8 @@ async function renderDetail(id) {
 /* ============================================================
    New / edit form
    ============================================================ */
+const COOK_WAYS = ["Sautéed", "Fried", "Roasted", "Grilled", "Soup or stew", "Sauce", "Dried", "Frozen", "Pickled", "Powder", "Tea"];
+const COOK_RATINGS = ["Loved it", "Good", "Okay", "Not for me"];
 const chipGroup = (id, items, selected, attr = "c") => `<div class="chips" id="${id}" role="group">${items.map(it => { const [n, c] = Array.isArray(it) ? it : [it, null]; return `<button type="button" class="chip" data-${attr}="${esc(n)}" aria-pressed="${selected.includes(n)}">${c ? `<span class="sw" style="background:${c}"></span>` : ""}${esc(n)}</button>`; }).join("")}</div>`;
 const picked = (root, id, attr = "c") => $$(`#${id} .chip[aria-pressed=true]`, root).map(b => b.dataset[attr]);
 function singleSelect(root, id) {
@@ -1689,6 +1694,17 @@ async function renderForm(id) {
       </div>
     </fieldset>
 
+    <fieldset><legend>Notes</legend>
+      <div class="field"><label for="notes">General notes</label><textarea id="notes" placeholder="Anything worth remembering: who you were with, access to the spot, what to check next time…">${esc(f.notes || "")}</textarea></div>
+      <details class="edmore" ${(f.kitchen && (f.kitchen.text || (f.kitchen.ways || []).length || f.kitchen.rating)) ? "open" : ""}><summary>Kitchen notes</summary>
+        <div class="settings-list" style="gap:12px;margin-top:8px">
+          <p class="hint" style="margin:0">Only for finds an expert has confirmed in person. Never eat anything based on this app.</p>
+          <div><div class="lbl">How you used it</div>${chipGroup("cookChips", COOK_WAYS, (f.kitchen && f.kitchen.ways) || [])}</div>
+          <div class="field"><label for="cookRating">How it turned out</label><select id="cookRating"><option value="">Not tried yet</option>${COOK_RATINGS.map(r => `<option ${f.kitchen && f.kitchen.rating === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+          <div class="field"><label for="cookNotes">Recipe and kitchen notes</label><textarea id="cookNotes" placeholder="How you cleaned and cooked it, how long it kept, what you'd change…">${esc((f.kitchen && f.kitchen.text) || "")}</textarea></div>
+        </div></details>
+    </fieldset>
+
     <fieldset><legend>Description</legend>
       <div class="field"><label for="desc">Describe it</label><textarea id="desc">${esc(f.description)}</textarea>
         ${SpeechRec ? '<div class="btn-row"><button class="btn small" type="button" id="dictBtn" aria-pressed="false"><svg><use href="#i-mic"/></svg><span>Dictate</span></button></div>' : ""}</div>
@@ -1725,7 +1741,7 @@ async function renderForm(id) {
   }
   $$(".seg button", form).forEach(b => b.addEventListener("click", () => { f.type = b.dataset.v; applyType(); }));
   applyType();
-  multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips");
+  multiSelect(form, "colourChips"); multiSelect(form, "wxChips"); multiSelect(form, "habChips"); multiSelect(form, "cookChips");
   singleSelect(form, "sporeChips"); singleSelect(form, "gillChips"); singleSelect(form, "subChips");
   multiSelect(form, "smellChips"); multiSelect(form, "texChips"); singleSelect(form, "bruiseChips");
 
@@ -1972,6 +1988,9 @@ async function renderForm(id) {
     f.colours = picked(form, "colourChips");
     f.colourNote = $("#colourNote").value.trim();
     f.description = $("#desc").value.trim();
+    f.notes = $("#notes").value.trim() || undefined;
+    { const k = { ways: picked(form, "cookChips"), rating: $("#cookRating").value, text: $("#cookNotes").value.trim() };
+      f.kitchen = k.ways.length || k.rating || k.text ? { ...k, at: (f.kitchen && f.kitchen.at) || Date.now() } : undefined; }
     f.weather = picked(form, "wxChips", "w");
     f.rainRecent = $("#rainRecent").value;
     f.temp = $("#temp").value === "" ? null : +$("#temp").value;
@@ -2093,7 +2112,13 @@ function terrainText(f) {
    ============================================================ */
 const dayOfYear = d => { const x = new Date(d); return Math.floor((x - new Date(x.getFullYear(), 0, 0)) / DAY); };
 function inSeason(f, now = new Date()) { const diff = Math.abs(dayOfYear(f.foundAt) - dayOfYear(now)); return Math.min(diff, 365 - diff) <= 21; }
-function fruitingCandidates() { return finds.filter(f => f.type === "mushroom" && f.lat != null && !f.sample && new Date(f.foundAt).getFullYear() < new Date().getFullYear() + 1 && (Date.now() - new Date(f.foundAt)) / DAY > 200 && inSeason(f)); }
+// Past mushroom spots coming back into season, plus any spot you marked to revisit.
+function fruitingCandidates() { return finds.filter(f => f.type === "mushroom" && f.lat != null && !f.sample && inSeason(f) && ((Date.now() - new Date(f.foundAt)) / DAY > 200 || (f.revisit && (Date.now() - new Date(f.foundAt)) / DAY > 21))); }
+const alertsOn = () => lsGet("fruitAlerts", false) && (NATIVE || ("Notification" in window && Notification.permission === "granted"));
+function sendAlert(title, body) {
+  if (NATIVE) { nat("showAlert", { title, body }).catch(() => {}); return; }
+  try { new Notification(title, { body, icon: "icon.svg" }); } catch (e) {}
+}
 async function checkFruiting(force) {
   const cached = lsGet("fruiting", null);
   if (!force && cached && Date.now() - cached.ts < 6 * 3600000) return cached;
@@ -2119,9 +2144,7 @@ async function checkFruiting(force) {
   const before = new Set((cached && cached.hits || []).map(h => h.id));
   lsSet("fruiting", out);
   const fresh = out.hits.filter(h => !before.has(h.id));
-  if (fresh.length && "Notification" in window && Notification.permission === "granted") {
-    try { new Notification("Spore & Leaf", { body: `${fresh.length} of your past spots ${fresh.length === 1 ? "looks" : "look"} good right now: in season and rain this week.`, icon: "icon.svg" }); } catch (e) {}
-  }
+  if (fresh.length && alertsOn()) sendAlert("Fruiting alert", `${fresh.length} of your spots ${fresh.length === 1 ? "looks" : "look"} good right now: in season, with rain this week. ${fresh.map(h => (finds.find(f => f.id === h.id) || {}).name).filter(Boolean).slice(0, 3).join(", ")}`);
   return out;
 }
 
@@ -3180,8 +3203,34 @@ async function renderEdibles() {
 /* ============================================================
    Season: revisit list and season stats
    ============================================================ */
-function renderSeason() {
-  setChrome({ title: "Stats", tab: "season" });
+function monthCalHTML(off) {
+  const now = new Date(), d0 = new Date(now.getFullYear(), now.getMonth() + off, 1);
+  const y = d0.getFullYear(), m = d0.getMonth(), days = new Date(y, m + 1, 0).getDate(), lead = (d0.getDay() + 6) % 7; // weeks start Monday
+  const by = {};
+  finds.filter(f => !f.sample).forEach(f => { const d = new Date(f.foundAt); if (d.getFullYear() === y && d.getMonth() === m) (by[d.getDate()] = by[d.getDate()] || []).push(f); });
+  let cells = "";
+  for (let i = 0; i < lead; i++) cells += `<span></span>`;
+  for (let d = 1; d <= days; d++) {
+    const l = by[d] || [], today = off === 0 && d === now.getDate();
+    cells += `<button type="button" class="mday${l.length ? " has" : ""}${today ? " today" : ""}" data-day="${d}" ${l.length ? "" : "disabled"} aria-label="${d} ${MONTHS[m]}: ${l.length} finds"><b class="num">${d}</b>${l.length ? `<span class="mdots">${l.slice(0, 3).map(f => `<i class="dot ${f.type}"></i>`).join("")}${l.length > 3 ? `<small>+${l.length - 3}</small>` : ""}</span>` : ""}</button>`;
+  }
+  const n = Object.values(by).reduce((a, l) => a + l.length, 0);
+  return { html: `<div class="mcal-head"><button class="icon-btn" type="button" id="mPrev" aria-label="Previous month">‹</button><b>${MONTHS[m]} ${y}</b><span class="hint num">${n} ${n === 1 ? "find" : "finds"}</span><button class="icon-btn" type="button" id="mNext" aria-label="Next month">›</button></div>
+    <div class="mcal">${["M", "T", "W", "T", "F", "S", "S"].map(x => `<span class="mwk">${x}</span>`).join("")}${cells}</div>`, by };
+}
+function seasonChartHTML() {
+  const named = {};
+  finds.filter(f => f.name && !f.sample).forEach(f => { const k = f.name.trim(); (named[k] = named[k] || { type: f.type, m: Array(12).fill(0) }).m[new Date(f.foundAt).getMonth()]++; });
+  const rows = Object.entries(named).sort((a, b) => b[1].m.reduce((x, y) => x + y) - a[1].m.reduce((x, y) => x + y)).slice(0, 15);
+  if (!rows.length) return `<p class="hint">Name some finds and your own season chart builds up here.</p>`;
+  const now = new Date().getMonth();
+  return `<div class="schart"><span></span>${MONTHS.map((x, i) => `<span class="sm${i === now ? " now" : ""}">${x[0]}</span>`).join("")}
+    ${rows.map(([n, v]) => { const mx = Math.max(...v.m); return `<a class="sname" href="#species-${encodeURIComponent(n.toLowerCase())}"><span class="dot ${v.type}"></span>${esc(n)}</a>${v.m.map((c, i) => `<i title="${esc(n)}, ${MONTHS[i]}: ${c}" style="background:${c ? `color-mix(in srgb, var(${v.type === "plant" ? "--chart-plant" : "--chart-shroom"}) ${Math.round(35 + 65 * c / mx)}%, var(--surface))` : "var(--surface-2)"}"></i>`).join("")}`; }).join("")}</div>`;
+}
+let calOff = 0;
+function renderSeason(sub) {
+  sub = sub || lsGet("calSub", "cal"); lsSet("calSub", sub);
+  setChrome({ title: sub === "stats" ? "Stats" : "Calendar", tab: "season" });
   const now = new Date(), thisMonth = now.getMonth();
   const rv = finds.filter(f => f.revisit).map(f => ({ f, nv: nextVisit(f) })).sort((a, b) => a.nv.days - b.nv.days);
   const per = Array.from({ length: 12 }, () => ({ mushroom: 0, plant: 0 }));
@@ -3194,14 +3243,22 @@ function renderSeason() {
   const topMax = top.length ? top[0][1].n : 1;
   const busiest = per.map((p, i) => [i, p.mushroom + p.plant]).sort((a, b) => b[1] - a[1])[0];
 
+  const mc = monthCalHTML(calOff);
+  const hideIf = which => sub === which ? "" : "hidden";
   main.innerHTML = `<div class="wrap view">
-    <div class="section" id="fruitSec"><h3>Fruiting now</h3><p class="hint" id="fruitMsg">Checking your past spots…</p><div class="list" id="fruitList"></div>
-      <div class="btn-row"><button class="btn small ghost" type="button" id="fruitRefresh">Check again</button>${"Notification" in window && Notification.permission !== "granted" ? '<button class="btn small" type="button" id="fruitNotify">Alert me when the app opens</button>' : ""}</div></div>
+    <div class="seg" role="tablist" aria-label="Calendar or stats"><button type="button" data-sub="cal" aria-pressed="${sub === "cal"}">Calendar</button><button type="button" data-sub="stats" aria-pressed="${sub === "stats"}">Stats</button></div>
+    <div class="settings-list" ${hideIf("cal")} style="gap:16px">
+    <div class="panel" id="mcalPanel">${mc.html}<div id="mDayList" class="list"></div></div>
+    <div class="section" id="fruitSec"><h3>Fruiting alerts</h3><p class="hint" id="fruitMsg">Checking your past spots…</p><div class="list" id="fruitList"></div>
+      <div class="btn-row"><button class="btn small ghost" type="button" id="fruitRefresh">Check again</button><label class="switch" style="flex:1;min-width:220px" for="fruitAlertsSw"><span>Notify me when a spot looks good</span><input type="checkbox" id="fruitAlertsSw" ${alertsOn() ? "checked" : ""}></label>${"" && "Notification" in window && Notification.permission !== "granted" ? '<button class="btn small" type="button" id="fruitNotify">Alert me when the app opens</button>' : ""}</div></div>
     <div class="section"><h3>Spots to revisit</h3>
       ${rv.length ? `<div class="list">${rv.map(({ f, nv }) => `<a class="card" href="#find-${esc(f.id)}"><img class="thumb" data-photo="${esc(cover(f) || "")}" alt=""><div class="card-body"><div class="card-title ${f.name ? "" : "unnamed"}">${esc(f.name || "Not yet identified")}</div><div class="meta"><span class="${nv.days <= 21 ? "due" : ""}">${esc(visitLabel(nv.days))}</span></div><div class="meta num"><span>Found ${esc(fmtDate(f.foundAt))}</span>${lastLoc && f.lat != null ? `<span class="sep">${esc(fmtDist(haversine(lastLoc, f)))} away</span>` : ""}</div></div></a>`).join("")}</div>`
       : `<p class="hint">Turn on "Revisit this spot" when you log a find, and it shows up here as that date comes round again.</p>`}
     </div>
 
+    <div class="panel"><h3>Your season chart</h3><p>What you've found in each month, across all years. Brighter means more finds.</p><div style="overflow-x:auto">${seasonChartHTML()}</div></div>
+    </div>
+    <div class="settings-list" ${hideIf("stats")} style="gap:16px">
     <div class="statrow num">
       <div><b>${finds.length}</b><span>finds in total</span></div>
       <div><b>${yearAgo}</b><span>in the last 12 months</span></div>
@@ -3220,6 +3277,8 @@ function renderSeason() {
       <div class="chart-tip num" id="chartTip">Tap a month to see its numbers.</div>
     </div>
 
+    </div>
+    <div class="settings-list" ${hideIf("cal")} style="gap:16px">
     <div class="panel"><h3>Year by year</h3>
       <p>Each square is one month. Brighter means more finds, so you can compare seasons across years.</p>
       <div class="seg" role="group" aria-label="Show in calendar" id="calSeg">
@@ -3230,12 +3289,36 @@ function renderSeason() {
       <div id="calDetail" class="settings-list"></div>
     </div>
 
+    </div>
+    <div class="settings-list" ${hideIf("stats")} style="gap:16px">
     <div class="panel"><h3>Most found</h3>
       ${top.length ? `<ul class="rank">${top.map(([n, v]) => `<li><a href="#species-${encodeURIComponent(n.toLowerCase().trim())}" style="color:inherit;text-decoration:none">${esc(n)} ›</a><span class="num" style="color:var(--muted)">${v.n}</span><span class="track"><i style="width:${v.n / topMax * 100}%;background:var(--chart-${v.type === "plant" ? "plant" : "shroom"})"></i></span></li>`).join("")}</ul>` : `<p>Name your finds to see which you come across most.</p>`}
       ${top.length ? `<a class="btn small" href="#species" style="align-self:flex-start">All species pages</a>` : ""}
     </div>
   </div>`;
   drawCalendar("all");
+  $$("[data-sub]").forEach(b => b.addEventListener("click", () => { if (b.dataset.sub !== sub) renderSeason(b.dataset.sub); }));
+  const wireMonth = () => {
+    $("#mPrev").addEventListener("click", () => { calOff--; redrawMonth(); });
+    $("#mNext").addEventListener("click", () => { calOff++; redrawMonth(); });
+    $$(".mday.has").forEach(b => b.addEventListener("click", () => {
+      $$(".mday").forEach(x => x.classList.toggle("sel", x === b));
+      const l = monthCalHTML(calOff).by[+b.dataset.day] || [];
+      $("#mDayList").innerHTML = l.map(cardHTML).join(""); hydrateThumbs($("#mDayList"));
+    }));
+  };
+  const redrawMonth = () => { $("#mcalPanel").innerHTML = monthCalHTML(calOff).html + `<div id="mDayList" class="list"></div>`; wireMonth(); };
+  wireMonth();
+  $("#fruitAlertsSw").addEventListener("change", async e => {
+    if (!e.target.checked) { lsSet("fruitAlerts", false); return; }
+    if (!NATIVE) {
+      if (!("Notification" in window)) { e.target.checked = false; toast("Alerts aren't available in this browser"); return; }
+      const r = await Notification.requestPermission().catch(() => "denied");
+      if (r !== "granted") { e.target.checked = false; toast("Alerts are blocked. Allow notifications for this site first."); return; }
+    } else await nat("notifyPermission").catch(() => {});
+    lsSet("fruitAlerts", true);
+    toast(settings.camp ? "Alerts are on. They wait while camping mode is on." : "Alerts are on. Spots are checked when you open the app, at most every 6 hours.");
+  });
   const showFruit = async force => {
     const msg = $("#fruitMsg"); if (!msg) return;
     const cands = fruitingCandidates();
